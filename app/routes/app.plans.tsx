@@ -71,15 +71,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         plans: [PRO_PLAN, ENTERPRISE_PLAN],
         isTest: billingTest,
       });
-      const subscription = billingCheck.appSubscriptions[0];
+      const subscription = subscriptionForPlan(
+        billingCheck.appSubscriptions,
+        currentPlan,
+      );
 
-      if (subscription?.id) {
-        await billing.cancel({
-          subscriptionId: subscription.id,
-          isTest: billingTest,
-          prorate: true,
-        });
+      if (!subscription?.id) {
+        return {
+          error:
+            "Could not find an active subscription to cancel for the current plan.",
+        };
       }
+
+      await billing.cancel({
+        subscriptionId: subscription.id,
+        isTest: billingTest,
+        prorate: true,
+      });
+
       invalidateRuntimeCache(`plan:${session.shop}`);
     } catch (error) {
       return { error: billingErrorMessage(error) };
@@ -227,6 +236,26 @@ export default function Plans() {
 
 function isSelectablePlan(plan: string): plan is AppPlan {
   return plan === "free" || plan === "pro" || plan === "enterprise";
+}
+
+type BillingSubscription = {
+  id: string;
+  name: string;
+  status: string;
+};
+
+function subscriptionForPlan(
+  subscriptions: BillingSubscription[],
+  currentPlan: AppPlan,
+) {
+  const targetName =
+    currentPlan === "enterprise" ? ENTERPRISE_PLAN : PRO_PLAN;
+
+  return subscriptions.find(
+    (subscription) =>
+      subscription.status === "ACTIVE" &&
+      subscription.name.toLowerCase() === targetName.toLowerCase(),
+  );
 }
 
 function billingErrorMessage(error: unknown) {
