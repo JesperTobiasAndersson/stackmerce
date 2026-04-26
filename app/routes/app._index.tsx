@@ -2,75 +2,89 @@ import { Link } from "react-router";
 
 import styles from "./app._index/styles.module.css";
 
+const overviewItems = [
+  {
+    label: "Discount types",
+    value: "3",
+    description: "Product, order, and shipping campaigns in one workflow.",
+  },
+  {
+    label: "Control areas",
+    value: "5+",
+    description: "Schedules, targeting, minimums, markets, and combinations.",
+  },
+  {
+    label: "Admin flow",
+    value: "1",
+    description: "Everything stays embedded directly inside Shopify Admin.",
+  },
+];
+
 const launchItems = [
   {
-    eyebrow: "Step 1",
-    title: "Create your first discount",
+    eyebrow: "Create",
+    title: "Build your first campaign",
     description:
-      "Build automatic product, order, or shipping discounts with targeting, scheduling, and clear campaign controls.",
+      "Start with an automatic discount and configure product, order, or shipping logic from one editor.",
     href: "/app/campaigns/new",
     cta: "Create discount",
   },
   {
-    eyebrow: "Step 2",
-    title: "Review your active campaigns",
+    eyebrow: "Manage",
+    title: "Keep active campaigns under control",
     description:
-      "See which discounts are live, what is still in draft, and how much campaign capacity your current plan includes.",
+      "Review what is live, what is still in draft, and how your current plan affects campaign capacity.",
     href: "/app/campaigns",
     cta: "Open discounts",
   },
   {
-    eyebrow: "Step 3",
-    title: "Choose the right plan",
+    eyebrow: "Scale",
+    title: "Expand features when you need them",
     description:
-      "Upgrade when you need shipping discounts, volume tiers, market targeting, or more active campaigns.",
+      "Upgrade when the store needs shipping discounts, volume tiers, market targeting, or more active campaigns.",
     href: "/app/plans",
     cta: "View plans",
   },
-];
-
-const capabilityItems = [
-  "Automatic product, order, and shipping discounts",
-  "Market targeting, schedules, and minimum cart rules",
-  "Fast embedded workflow directly in Shopify Admin",
 ];
 
 export default function AppIndex() {
   return (
     <s-page heading="Overview">
       <s-section>
-        <div className={styles.hero}>
-          <div className={styles.heroContent}>
+        <div className={styles.header}>
+          <div>
             <span className={styles.eyebrow}>Discount operations</span>
-            <h1 className={styles.title}>Launch campaigns without leaving Shopify Admin</h1>
+            <h1 className={styles.title}>Start building campaigns inside Shopify Admin</h1>
             <p className={styles.description}>
-              Set up your first automatic discount, keep campaign control in one
-              place, and expand into more advanced discount logic when the store
-              needs it.
+              This app keeps discount creation, campaign management, and plan
+              controls in the same workflow you already use for your store.
             </p>
-            <div className={styles.actions}>
-              <Link className={styles.primaryAction} to="/app/campaigns/new">
-                Create your first discount
-              </Link>
-              <Link className={styles.secondaryAction} to="/app/campaigns">
-                Browse discounts
-              </Link>
-            </div>
           </div>
-
-          <aside className={styles.heroPanel}>
-            <span className={styles.panelEyebrow}>What you can do here</span>
-            <ul className={styles.capabilityList}>
-              {capabilityItems.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </aside>
+          <div className={styles.headerActions}>
+            <Link className={styles.primaryAction} to="/app/campaigns/new">
+              Create discount
+            </Link>
+            <Link className={styles.secondaryAction} to="/app/campaigns">
+              Browse discounts
+            </Link>
+          </div>
         </div>
       </s-section>
 
       <s-section>
-        <div className={styles.grid}>
+        <div className={styles.summaryGrid} aria-label="Overview summary">
+          {overviewItems.map((item) => (
+            <div className={styles.summaryCard} key={item.label}>
+              <span className={styles.summaryLabel}>{item.label}</span>
+              <strong className={styles.summaryValue}>{item.value}</strong>
+              <span className={styles.summaryText}>{item.description}</span>
+            </div>
+          ))}
+        </div>
+      </s-section>
+
+      <s-section>
+        <div className={styles.cardGrid}>
           {launchItems.map((item) => (
             <article className={styles.card} key={item.title}>
               <span className={styles.cardEyebrow}>{item.eyebrow}</span>
