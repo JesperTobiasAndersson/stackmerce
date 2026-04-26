@@ -1,0 +1,38 @@
+query DeliveryInput {
+  presentmentCurrencyRate
+  localization {
+    market {
+      handle
+    }
+  }
+  cart {
+    cost {
+      subtotalAmount {
+        amount
+        currencyCode
+      }
+    }
+    lines {
+      quantity
+    }
+    deliveryGroups {
+      id
+      deliveryOptions {
+        handle
+        title
+        code
+      }
+    }
+  }
+  shop {
+    localTime {
+      date
+    }
+  }
+  discount {
+    discountClasses
+    metafield(namespace: "$app:discount-campaign", key: "campaign_config") {
+      jsonValue
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "payload": {
+    "export": "cart-lines-discounts-generate-run",
+    "target": "cart.lines.discounts.generate.run",
+    "input": {
+      "cart": {
+        "lines": [
+          {
+            "id": "gid://shopify/CartLine/0",
+            "cost": {
+              "subtotalAmount": {
+                "amount": "6.0"
+              }
+            }
+          }
+        ]
+      },
+      "discount": {
+        "discountClasses": ["PRODUCT", "ORDER", "SHIPPING"],
+        "metafield": {
+          "jsonValue": {
+            "version": 1,
+            "id": "campaign-1",
+            "name": "Campaign discount",
+            "status": "active",
+            "productDiscount": {
+              "type": "percentage",
+              "percentage": 20.0
+            },
+            "orderDiscount": {
+              "type": "percentage",
+              "percentage": 10.0
+            },
+            "shippingDiscount": {
+              "type": "none"
+            },
+            "conditions": {
+              "productIds": [],
+              "collectionIds": [],
+              "excludedProductIds": [],
+              "excludedCollectionIds": []
+            }
+          }
+        }
+      }
+    },
+    "inputBytes": 126,
+    "output": {
+      "operations": [
+        {
+          "productDiscountsAdd": {
+            "candidates": [
+              {
+                "message": "Campaign discount",
+                "targets": [
+                  {
+                    "cartLine": {
+                      "id": "gid://shopify/CartLine/0"
+                    }
+                  }
+                ],
+                "value": {
+                  "percentage": {
+                    "value": 20.0
+                  }
+                }
+              }
+            ],
+            "selectionStrategy": "ALL"
+          }
+        },
+        {
+          "orderDiscountsAdd": {
+            "candidates": [
+              {
+                "message": "Campaign discount",
+                "targets": [
+                  {
+                    "orderSubtotal": {
+                      "excludedCartLineIds": []
+                    }
+                  }
+                ],
+                "value": {
+                  "percentage": {
+                    "value": 10.0
+                  }
+                }
+              }
+            ],
+            "selectionStrategy": "FIRST"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "payload": {
+    "export": "cart-delivery-options-discounts-generate-run",
+    "target": "cart.delivery-options.discounts.generate.run",
+    "input": {
+      "discount": {
+        "discountClasses": ["SHIPPING"],
+        "metafield": {
+          "jsonValue": {
+            "version": 1,
+            "id": "campaign-1",
+            "name": "Campaign discount",
+            "status": "active",
+            "productDiscount": {
+              "type": "none"
+            },
+            "shippingDiscount": {
+              "type": "free_shipping"
+            },
+            "conditions": {
+              "productIds": [],
+              "collectionIds": [],
+              "excludedProductIds": [],
+              "excludedCollectionIds": []
+            }
+          }
+        }
+      },
+      "cart": {
+        "deliveryGroups": [
+          {
+            "id": "gid://shopify/CartDeliveryGroup/1"
+          }
+        ]
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "deliveryDiscountsAdd": {
+            "candidates": [
+              {
+                "message": "Campaign discount",
+                "targets": [
+                  {
+                    "deliveryGroup": {
+                      "id": "gid://shopify/CartDeliveryGroup/1"
+                    }
+                  }
+                ],
+                "value": {
+                  "percentage": {
+                    "value": 100.0
+                  }
+                }
+              }
+            ],
+            "selectionStrategy": "ALL"
+          }
+        }
+      ]
+    }
+  }
+}

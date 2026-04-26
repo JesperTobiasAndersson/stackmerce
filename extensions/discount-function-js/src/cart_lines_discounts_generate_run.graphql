@@ -1,0 +1,45 @@
+query CartInput($selectedCollectionIds: [ID!], $excludedCollectionIds: [ID!]) {
+  presentmentCurrencyRate
+  localization {
+    market {
+      handle
+    }
+  }
+  cart {
+    cost {
+      subtotalAmount {
+        amount
+        currencyCode
+      }
+    }
+    lines {
+      id
+      quantity
+      merchandise {
+        ... on ProductVariant {
+          product {
+            id
+            inAnySelectedCollection: inAnyCollection(ids: $selectedCollectionIds)
+            inAnyExcludedCollection: inAnyCollection(ids: $excludedCollectionIds)
+          }
+        }
+      }
+      cost {
+        subtotalAmount {
+          amount
+        }
+      }
+    }
+  }
+  shop {
+    localTime {
+      date
+    }
+  }
+  discount {
+    discountClasses
+    metafield(namespace: "$app:discount-campaign", key: "campaign_config") {
+      jsonValue
+    }
+  }
+}

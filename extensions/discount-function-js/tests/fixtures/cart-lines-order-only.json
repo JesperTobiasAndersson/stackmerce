@@ -1,0 +1,73 @@
+{
+  "payload": {
+    "export": "cart-lines-discounts-generate-run",
+    "target": "cart.lines.discounts.generate.run",
+    "input": {
+      "cart": {
+        "lines": [
+          {
+            "id": "gid://shopify/CartLine/0",
+            "cost": {
+              "subtotalAmount": {
+                "amount": "100.0"
+              }
+            }
+          }
+        ]
+      },
+      "discount": {
+        "discountClasses": ["ORDER"],
+        "metafield": {
+          "jsonValue": {
+            "version": 1,
+            "id": "campaign-1",
+            "name": "Campaign discount",
+            "status": "active",
+            "productDiscount": {
+              "type": "none"
+            },
+            "orderDiscount": {
+              "type": "percentage",
+              "percentage": 10.0
+            },
+            "shippingDiscount": {
+              "type": "none"
+            },
+            "conditions": {
+              "productIds": [],
+              "collectionIds": [],
+              "excludedProductIds": [],
+              "excludedCollectionIds": []
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "orderDiscountsAdd": {
+            "candidates": [
+              {
+                "message": "Campaign discount",
+                "targets": [
+                  {
+                    "orderSubtotal": {
+                      "excludedCartLineIds": []
+                    }
+                  }
+                ],
+                "value": {
+                  "percentage": {
+                    "value": 10.0
+                  }
+                }
+              }
+            ],
+            "selectionStrategy": "FIRST"
+          }
+        }
+      ]
+    }
+  }
+}
