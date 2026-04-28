@@ -108,7 +108,8 @@ function serializeSession(session: Session): StoredSession {
 }
 
 function deserializeSession(session: StoredSession): Session {
-  const { expires, refreshTokenExpires, updatedAt: _updatedAt, ...rest } = session;
+  const { expires, refreshTokenExpires, updatedAt, ...rest } = session;
+  void updatedAt;
   const sessionData: SessionData = {
     ...(rest as SessionData),
     expires: expires ? new Date(expires) : undefined,

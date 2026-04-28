@@ -1,22 +1,20 @@
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { fileURLToPath } from "url";
 import { promisify } from "util";
 import { describe, beforeAll, test, expect } from "vitest";
 import { loadSchema, loadInputQuery, loadFixture, validateTestAssets, runFunction } from "@shopify/shopify-function-test-helpers";
 
 const execFileAsync = promisify(execFile);
 const shopifyCommand = process.platform === "win32" ? "shopify.cmd" : "shopify";
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDir = path.dirname(currentFilePath);
 
 async function runShopify(args, cwd) {
-  const command = process.platform === "win32" ? process.env.ComSpec || "cmd.exe" : shopifyCommand;
-  const commandArgs =
-    process.platform === "win32"
-      ? ["/d", "/s", "/c", shopifyCommand, ...args]
-      : args;
-
-  const { stdout } = await execFileAsync(command, commandArgs, {
+  const { stdout } = await execFileAsync(shopifyCommand, args, {
     cwd,
+    shell: process.platform === "win32",
     env: {
       ...process.env,
       SHOPIFY_INVOKED_BY: "shopify-function-test-helpers",
@@ -36,7 +34,7 @@ describe("Default Integration Test", () => {
   let wasmPath;
 
   beforeAll(async () => {
-    functionDir = path.dirname(__dirname);
+    functionDir = path.dirname(currentDir);
     const appRootDir = path.dirname(functionDir);
     const functionName = path.basename(functionDir);
     await runShopify(["app", "function", "build", "--path", functionName], appRootDir);
@@ -48,9 +46,9 @@ describe("Default Integration Test", () => {
     );
     ({ schemaPath, functionRunnerPath, wasmPath, targeting } = functionInfo);
     schema = await loadSchema(schemaPath);
-  }, 45000);
+  }, 90000);
 
-  const fixturesDir = path.join(__dirname, "fixtures");
+  const fixturesDir = path.join(currentDir, "fixtures");
   const fixtureFiles = fs
     .readdirSync(fixturesDir)
     .filter((file) => file.endsWith(".json"))

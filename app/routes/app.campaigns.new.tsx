@@ -168,30 +168,21 @@ export default function NewCampaign() {
     excludedCollectionIds: new Set<string>(),
   });
 
-  const searchProducts = (query: string) => {
-    const searchParams = new URLSearchParams(location.search);
-    searchParams.set("resource", "products");
-    searchParams.set("query", query);
-    productFetcher.load(`/app/campaigns/new?${searchParams.toString()}`);
-  };
-
-  const searchCollections = (query: string) => {
-    const searchParams = new URLSearchParams(location.search);
-    searchParams.set("resource", "collections");
-    searchParams.set("query", query);
-    collectionFetcher.load(`/app/campaigns/new?${searchParams.toString()}`);
-  };
-
   useEffect(() => {
     const query = productQuery.trim();
     if (query.length < 2) {
       return;
     }
 
-    const timeout = window.setTimeout(() => searchProducts(query), 250);
+    const timeout = window.setTimeout(() => {
+      const searchParams = new URLSearchParams(location.search);
+      searchParams.set("resource", "products");
+      searchParams.set("query", query);
+      productFetcher.load(`${location.pathname}?${searchParams.toString()}`);
+    }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [productQuery]);
+  }, [location.pathname, location.search, productFetcher, productQuery]);
 
   useEffect(() => {
     const query = collectionQuery.trim();
@@ -199,10 +190,15 @@ export default function NewCampaign() {
       return;
     }
 
-    const timeout = window.setTimeout(() => searchCollections(query), 250);
+    const timeout = window.setTimeout(() => {
+      const searchParams = new URLSearchParams(location.search);
+      searchParams.set("resource", "collections");
+      searchParams.set("query", query);
+      collectionFetcher.load(`${location.pathname}?${searchParams.toString()}`);
+    }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [collectionQuery]);
+  }, [collectionFetcher, collectionQuery, location.pathname, location.search]);
 
   const handleProductSelect = (product: ShopifyProductSummary) => {
     const newSet = new Set(formState.selectedProductIds);
@@ -321,7 +317,7 @@ export default function NewCampaign() {
     if (errorSummary.length) {
       setActiveTab(errorSummary[0].tab);
     }
-  }, [errorSummaryKey]);
+  }, [errorSummary, errorSummaryKey]);
 
   return (
     <s-page heading="Create discount">
@@ -2405,44 +2401,6 @@ function tabForError(error: string): CampaignFormTab {
 }
 
 // Styles
-const tabNavStyle = {
-  display: "flex",
-  borderBottom: "2px solid #eef0f2",
-  gap: "0",
-  marginBottom: "2rem",
-  alignItems: "stretch",
-} as const;
-
-const tabButtonStyle = {
-  background: "transparent",
-  border: "none",
-  borderBottomWidth: "2px",
-  borderBottomStyle: "solid",
-  borderBottomColor: "transparent",
-  cursor: "pointer",
-  font: "inherit",
-  fontWeight: 500,
-  fontSize: "0.875rem",
-  padding: "0.75rem 1rem",
-  marginBottom: "-2px",
-  transition: "all 0.2s ease",
-  color: "#5f6368",
-} as const;
-
-const activeTabStyle = {
-  ...tabButtonStyle,
-  borderBottomColor: "#303030",
-  color: "#303030",
-} as const;
-
-const inactiveTabStyle = {
-  ...tabButtonStyle,
-} as const;
-
-const tabContentStyle = {
-  paddingBottom: "2rem",
-} as const;
-
 const formSectionStyle = {
   marginBottom: "2rem",
   padding: "0.15rem 0 2rem 1.1rem",
@@ -2694,47 +2652,4 @@ const searchResultMetaStyle = {
   fontWeight: 600,
   padding: "0.15rem 0.45rem",
   whiteSpace: "nowrap",
-} as const;
-
-const actionsStyle = {
-  display: "flex",
-  gap: "0.75rem",
-  marginTop: "2rem",
-  borderTop: "1px solid #e3e3e3",
-  paddingTop: "1.5rem",
-  flexWrap: "wrap",
-} as const;
-
-const primaryActionStyle = {
-  background: "#303030",
-  border: "1px solid #303030",
-  borderRadius: "0.5rem",
-  boxShadow: "0 10px 20px rgba(26, 26, 26, 0.14)",
-  color: "#fff",
-  cursor: "pointer",
-  font: "inherit",
-  fontWeight: 600,
-  padding: "0.625rem 0.875rem",
-  fontSize: "0.875rem",
-} as const;
-
-const errorBoxStyle = {
-  background: "#fff4f4",
-  border: "1px solid #fed3d1",
-  borderRadius: "0.375rem",
-  marginBottom: "1rem",
-  padding: "1rem",
-  display: "flex",
-  gap: "0.75rem",
-} as const;
-
-const errorIconStyle = {
-  fontSize: "1.25rem",
-  flexShrink: 0,
-} as const;
-
-const errorTextStyle = {
-  color: "#d72c0d",
-  margin: "0.25rem 0",
-  fontSize: "0.875rem",
 } as const;

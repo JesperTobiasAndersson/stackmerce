@@ -377,7 +377,7 @@ export default function CampaignsIndex() {
               </button>
             </div>
             <p className={styles.deleteModalText}>
-              This will permanently delete "{campaignPendingDelete.name}". This
+              This will permanently delete &quot;{campaignPendingDelete.name}&quot;. This
               action cannot be undone.
             </p>
             <div className={styles.deleteModalActions}>

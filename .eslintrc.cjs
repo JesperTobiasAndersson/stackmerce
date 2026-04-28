@@ -84,9 +84,16 @@ module.exports = {
         ".graphqlrc.{js,ts}",
         "shopify.server.{js,ts}",
         "**/*.server.{js,ts}",
+        "**/*.test.js",
       ],
       env: {
         node: true,
+      },
+    },
+    {
+      files: ["extensions/**/generated/**/*.ts"],
+      rules: {
+        "@typescript-eslint/no-explicit-any": "off",
       },
     },
   ],

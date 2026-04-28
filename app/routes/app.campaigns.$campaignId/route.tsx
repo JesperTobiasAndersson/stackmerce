@@ -271,7 +271,7 @@ export default function CampaignEdit() {
     }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [productQuery]);
+  }, [location.pathname, location.search, productFetcher, productQuery]);
 
   useEffect(() => {
     const query = collectionQuery.trim();
@@ -285,7 +285,7 @@ export default function CampaignEdit() {
     }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [collectionQuery]);
+  }, [collectionFetcher, collectionQuery, location.pathname, location.search]);
 
   const productResults =
     productFetcher.data && "products" in productFetcher.data
@@ -320,7 +320,7 @@ export default function CampaignEdit() {
     if (errorSummary.length) {
       setActiveTab(errorSummary[0].tab);
     }
-  }, [errorSummaryKey]);
+  }, [errorSummary, errorSummaryKey]);
 
   const addProduct = (product: ShopifyProductSummary) => {
     const selectedProductIds = new Set(formState.selectedProductIds);
@@ -1657,7 +1657,7 @@ export default function CampaignEdit() {
                 </button>
               </div>
               <p style={deleteModalTextStyle}>
-                This will permanently delete "{campaign.name}". This action
+                This will permanently delete &quot;{campaign.name}&quot;. This action
                 cannot be undone.
               </p>
               <div style={deleteModalActionsStyle}>
