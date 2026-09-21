@@ -4,22 +4,18 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import {
-  Form,
   redirect,
   useActionData,
   useLoaderData,
   useNavigation,
   useRouteError,
   useSearchParams,
+  useSubmit,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useState } from "react";
+import { useEffect } from "react";
 
-import {
-  getBillingSummary,
-  isBillingTest,
-  planCacheKey,
-} from "../billing.server";
+import { getBillingSummary, isBillingTest, planCacheKey } from "../billing.server";
 import {
   entitlementForPlan,
   formatCampaignLimit,
@@ -28,9 +24,9 @@ import {
   type AppPlan,
 } from "../entitlements";
 import { loadActiveCampaignCount } from "../campaign-storage.server";
+import { flag, showToast } from "../lib/polaris";
 import { invalidateRuntimeCache } from "../runtime-cache.server";
 import { authenticate, ENTERPRISE_PLAN, PRO_PLAN } from "../shopify.server";
-import styles from "./app.plans/styles.module.css";
 
 type BillingPlan = Exclude<AppPlan, "free">;
 
@@ -51,6 +47,8 @@ const SHOPIFY_BILLING_PLANS: Record<
   pro: PRO_PLAN,
   enterprise: ENTERPRISE_PLAN,
 };
+
+const DOWNGRADE_MODAL_ID = "downgrade-modal";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -156,8 +154,8 @@ export default function Plans() {
   } = useLoaderData<typeof loader>() as PlansLoaderData;
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const submit = useSubmit();
   const [searchParams] = useSearchParams();
-  const [confirmDowngrade, setConfirmDowngrade] = useState(false);
   const billingStatus = searchParams.get("billing");
   const submittingPlan =
     navigation.state === "submitting"
@@ -169,210 +167,165 @@ export default function Plans() {
     activeCampaignCount - PLAN_ENTITLEMENTS.free.maxActiveCampaigns,
   );
 
+  useEffect(() => {
+    if (approved) {
+      showToast(`You are now on ${current.name}`);
+    } else if (billingStatus === "cancelled") {
+      showToast("Subscription cancelled");
+    }
+  }, [approved, billingStatus, current.name]);
+
+  const choosePlan = (plan: AppPlan) => {
+    submit({ plan }, { method: "post" });
+  };
+
   return (
     <s-page heading="Plans">
-      <s-section>
-        <div className={styles.header}>
-          <div>
-            <span className={styles.eyebrow}>Billing</span>
-            <h1 className={styles.title}>Choose the right plan</h1>
-            <p className={styles.description}>
-              Free keeps the basics available. Pro and Enterprise unlock the
-              advanced discount types and targeting controls, and both start
-              with a {PAID_PLAN_TRIAL_DAYS}-day free trial.
-            </p>
-          </div>
-          <div className={styles.currentPlan}>
-            <span>Current plan</span>
-            <strong>{current.name}</strong>
-            {trialEndsLabel ? (
-              <span className={styles.currentPlanMeta}>
-                Free trial ends {trialEndsLabel}
-              </span>
-            ) : nextChargeLabel ? (
-              <span className={styles.currentPlanMeta}>
-                Next charge {nextChargeLabel}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      </s-section>
-
       {billingTest ? (
-        <s-section>
-          <div className={styles.notice}>
-            Billing is running in test mode. Set{" "}
-            <code>SHOPIFY_BILLING_TEST=false</code> in production when the app
-            is ready for real charges.
-          </div>
-        </s-section>
+        <s-banner heading="Billing is in test mode" tone="info">
+          <s-paragraph>
+            No real charges are made. Set SHOPIFY_BILLING_TEST=false in
+            production when the app is ready for real charges.
+          </s-paragraph>
+        </s-banner>
       ) : null}
 
       {approved ? (
-        <s-section>
-          <div className={styles.success} role="status">
-            You are now on {current.name}.{" "}
+        <s-banner heading={`You are now on ${current.name}`} tone="success">
+          <s-paragraph>
             {trialEndsLabel
               ? `Your free trial runs until ${trialEndsLabel}; you will not be charged before then.`
               : "All plan features are unlocked."}
-          </div>
-        </s-section>
+          </s-paragraph>
+        </s-banner>
       ) : billingStatus === "cancelled" ? (
-        <s-section>
-          <div className={styles.success} role="status">
-            Subscription cancelled. You are back on the Free plan.
-          </div>
-        </s-section>
+        <s-banner heading="Subscription cancelled" tone="success">
+          <s-paragraph>You are back on the Free plan.</s-paragraph>
+        </s-banner>
       ) : null}
 
       {actionData?.error ? (
-        <s-section>
-          <div className={styles.error} role="alert">
-            {actionData.error}
-          </div>
-        </s-section>
+        <s-banner heading="Could not change plan" tone="critical">
+          <s-paragraph>{actionData.error}</s-paragraph>
+        </s-banner>
       ) : null}
 
-      <s-section>
-        <div className={styles.planGrid}>
-          {(Object.keys(PLAN_ENTITLEMENTS) as AppPlan[]).map((plan) => {
-            const entitlements = PLAN_ENTITLEMENTS[plan];
-            const isCurrentPlan = currentPlan === plan;
-            const isSubmitting = submittingPlan === plan;
-            const isPaid = plan !== "free";
-            const isDowngrade = plan === "free";
+      <s-section heading="Choose the right plan">
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Free keeps the basics available. Pro and Enterprise unlock the
+            advanced discount types and targeting controls, and both start with
+            a {PAID_PLAN_TRIAL_DAYS}-day free trial.
+            {nextChargeLabel ? ` Your next charge is on ${nextChargeLabel}.` : ""}
+          </s-paragraph>
 
-            return (
-              <article
-                className={
-                  isCurrentPlan
-                    ? `${styles.planCard} ${styles.planCardCurrent}`
-                    : styles.planCard
-                }
-                key={plan}
-              >
-                <div className={styles.planCardHeader}>
-                  <div>
-                    <h2>{entitlements.name}</h2>
-                    <p>{planDescriptions[plan]}</p>
-                  </div>
-                  {isCurrentPlan ? (
-                    <span className={styles.currentBadge}>Active</span>
-                  ) : null}
-                </div>
+          <s-grid gap="base" gridTemplateColumns="repeat(auto-fit, minmax(240px, 1fr))">
+            {(Object.keys(PLAN_ENTITLEMENTS) as AppPlan[]).map((plan) => {
+              const entitlements = PLAN_ENTITLEMENTS[plan];
+              const isCurrentPlan = currentPlan === plan;
+              const isSubmitting = submittingPlan === plan;
+              const isPaid = plan !== "free";
 
-                {isPaid && !isCurrentPlan && currentPlan === "free" ? (
-                  <span className={styles.trialBadge}>
-                    {PAID_PLAN_TRIAL_DAYS}-day free trial
-                  </span>
-                ) : null}
-
-                <div className={styles.price}>
-                  <strong>{entitlements.priceLabel.replace("/month", "")}</strong>
-                  <span>/ month</span>
-                </div>
-                {isPaid ? (
-                  <p className={styles.priceNote}>
-                    Billed every 30 days through Shopify. Cancel any time.
-                  </p>
-                ) : null}
-
-                <ul className={styles.featureList}>
-                  {planFeatures(plan).map((feature) => (
-                    <li key={feature}>{feature}</li>
-                  ))}
-                </ul>
-
-                {isDowngrade && !isCurrentPlan ? (
-                  <button
-                    className={styles.secondaryButton}
-                    disabled={Boolean(submittingPlan)}
-                    onClick={() => setConfirmDowngrade(true)}
-                    type="button"
-                  >
-                    {isSubmitting ? "Cancelling..." : "Downgrade to Free"}
-                  </button>
-                ) : (
-                  <Form method="post">
-                    <input name="plan" type="hidden" value={plan} />
-                    <button
-                      className={
-                        isCurrentPlan
-                          ? styles.secondaryButton
-                          : styles.primaryButton
-                      }
-                      disabled={isCurrentPlan || Boolean(submittingPlan)}
-                      type="submit"
-                    >
-                      {isCurrentPlan
-                        ? "Current plan"
-                        : isSubmitting
-                          ? "Opening Shopify..."
-                          : currentPlan === "free"
-                            ? `Start ${PAID_PLAN_TRIAL_DAYS}-day free trial`
-                            : plan === "enterprise"
-                              ? "Upgrade to Enterprise"
-                              : "Switch to Pro"}
-                    </button>
-                  </Form>
-                )}
-              </article>
-            );
-          })}
-        </div>
+              return (
+                <s-box
+                  background={isCurrentPlan ? "subdued" : "base"}
+                  border="base"
+                  borderRadius="base"
+                  key={plan}
+                  padding="base"
+                >
+                  <s-stack direction="block" gap="base">
+                    <s-stack alignItems="center" direction="inline" gap="small" justifyContent="space-between">
+                      <s-heading>{entitlements.name}</s-heading>
+                      {isCurrentPlan ? (
+                        <s-badge tone="success">Current plan</s-badge>
+                      ) : isPaid && currentPlan === "free" ? (
+                        <s-badge tone="info">{PAID_PLAN_TRIAL_DAYS}-day free trial</s-badge>
+                      ) : null}
+                    </s-stack>
+                    <s-text color="subdued">{planDescriptions[plan]}</s-text>
+                    <s-stack alignItems="baseline" direction="inline" gap="small-300">
+                      <s-heading>{entitlements.priceLabel.replace("/month", "")}</s-heading>
+                      <s-text color="subdued">/ month</s-text>
+                    </s-stack>
+                    {isPaid ? (
+                      <s-text color="subdued">
+                        Billed every 30 days through Shopify. Cancel any time.
+                      </s-text>
+                    ) : null}
+                    <s-unordered-list>
+                      {planFeatures(plan).map((feature) => (
+                        <s-list-item key={feature}>{feature}</s-list-item>
+                      ))}
+                    </s-unordered-list>
+                    {isCurrentPlan ? (
+                      <s-button disabled>Current plan</s-button>
+                    ) : plan === "free" ? (
+                      <s-button
+                        command="--show"
+                        commandFor={DOWNGRADE_MODAL_ID}
+                        disabled={flag(Boolean(submittingPlan))}
+                      >
+                        Downgrade to Free
+                      </s-button>
+                    ) : (
+                      <s-button
+                        disabled={flag(Boolean(submittingPlan))}
+                        loading={flag(isSubmitting)}
+                        onClick={() => choosePlan(plan)}
+                        variant="primary"
+                      >
+                        {currentPlan === "free"
+                          ? `Start ${PAID_PLAN_TRIAL_DAYS}-day free trial`
+                          : plan === "enterprise"
+                            ? "Upgrade to Enterprise"
+                            : "Switch to Pro"}
+                      </s-button>
+                    )}
+                  </s-stack>
+                </s-box>
+              );
+            })}
+          </s-grid>
+        </s-stack>
       </s-section>
 
-      {confirmDowngrade ? (
-        <div
-          aria-labelledby="downgrade-title"
-          aria-modal="true"
-          className={styles.modalBackdrop}
-          role="dialog"
+      <s-modal heading="Downgrade to Free?" id={DOWNGRADE_MODAL_ID}>
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Your {current.name} subscription is cancelled immediately and any
+            unused time is credited by Shopify. On Free:
+          </s-paragraph>
+          <s-unordered-list>
+            <s-list-item>
+              Only {PLAN_ENTITLEMENTS.free.maxActiveCampaigns} discount can be active
+              {campaignsToDeactivate > 0
+                ? ` (you currently have ${activeCampaignCount} active; you will need to deactivate ${campaignsToDeactivate})`
+                : ""}
+              .
+            </s-list-item>
+            <s-list-item>
+              Discounts using fixed amounts, BOGO, volume tiers, shipping
+              discounts, market targeting, or scheduling keep running but cannot
+              be edited until those settings are removed.
+            </s-list-item>
+          </s-unordered-list>
+        </s-stack>
+        <s-button
+          command="--hide"
+          commandFor={DOWNGRADE_MODAL_ID}
+          loading={flag(submittingPlan === "free")}
+          onClick={() => choosePlan("free")}
+          slot="primary-action"
+          tone="critical"
+          variant="primary"
         >
-          <div className={styles.modal}>
-            <h2 id="downgrade-title">Downgrade to Free?</h2>
-            <p>
-              Your {current.name} subscription is cancelled immediately and any
-              unused time is credited by Shopify. On Free:
-            </p>
-            <ul>
-              <li>
-                Only {PLAN_ENTITLEMENTS.free.maxActiveCampaigns} discount can be
-                active
-                {campaignsToDeactivate > 0
-                  ? ` (you currently have ${activeCampaignCount} active; you will need to deactivate ${campaignsToDeactivate})`
-                  : ""}
-                .
-              </li>
-              <li>
-                Discounts using fixed amounts, BOGO, volume tiers, shipping
-                discounts, market targeting, or scheduling keep running but
-                cannot be edited until those settings are removed.
-              </li>
-            </ul>
-            <div className={styles.modalActions}>
-              <button
-                className={styles.secondaryButton}
-                disabled={Boolean(submittingPlan)}
-                onClick={() => setConfirmDowngrade(false)}
-                type="button"
-              >
-                Keep {current.name}
-              </button>
-              <Form method="post">
-                <input name="plan" type="hidden" value="free" />
-                <button
-                  className={styles.dangerButton}
-                  disabled={Boolean(submittingPlan)}
-                  type="submit"
-                >
-                  {submittingPlan === "free" ? "Cancelling..." : "Downgrade to Free"}
-                </button>
-              </Form>
-            </div>
-          </div>
-        </div>
-      ) : null}
+          Downgrade to Free
+        </s-button>
+        <s-button command="--hide" commandFor={DOWNGRADE_MODAL_ID} slot="secondary-actions">
+          Keep {current.name}
+        </s-button>
+      </s-modal>
     </s-page>
   );
 }

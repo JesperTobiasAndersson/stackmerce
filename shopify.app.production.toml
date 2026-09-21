@@ -2,10 +2,7 @@
 
 client_id = "2bf6876a2bbf4381c85973f61ddfa5cb"
 name = "Discount"
-# TODO: replace with the production Vercel domain after the first deploy
-# (e.g. https://discount-app.vercel.app or a custom domain), then run
-# `shopify app deploy` so Shopify picks up the new URLs.
-application_url = "https://YOUR-VERCEL-DOMAIN.vercel.app"
+application_url = "https://stackmerce-discount.vercel.app"
 embedded = true
 
 [build]
@@ -35,4 +32,4 @@ api_version = "2026-07"
 scopes = "read_discounts,write_discounts,read_shipping,read_markets"
 
 [auth]
-redirect_urls = [ "https://YOUR-VERCEL-DOMAIN.vercel.app/auth/callback" ]
+redirect_urls = [ "https://stackmerce-discount.vercel.app/auth/callback" ]

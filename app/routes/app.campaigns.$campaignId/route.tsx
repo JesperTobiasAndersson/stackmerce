@@ -4,25 +4,20 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import {
-  Form,
-  Link,
   redirect,
   useActionData,
+  useFetcher,
   useLoaderData,
   useLocation,
   useNavigation,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useEffect, useState } from "react";
 
-import styles from "../../components/campaign-form.module.css";
-import {
-  CampaignForm,
-  type ResourceSearchData,
-} from "../../components/campaign-form";
+import { CampaignForm } from "../../components/campaign-form";
 import { getCurrentPlan } from "../../billing.server";
 import type { CampaignConfig } from "../../campaign-config";
 import {
+  afterSaveUrl,
   campaignInputFromForm,
   validateCampaignInput,
 } from "../../campaign-form.server";
@@ -34,11 +29,8 @@ import {
   type CampaignDetail,
   type CampaignFormInput,
 } from "../../campaign-storage.server";
-import {
-  entitlementForPlan,
-  validateCampaignEntitlements,
-  type AppPlan,
-} from "../../entitlements";
+import { validateCampaignEntitlements, type AppPlan } from "../../entitlements";
+import { flag } from "../../lib/polaris";
 import type {
   ShopifyCollectionSummary,
   ShopifyMarketSummary,
@@ -50,12 +42,12 @@ import {
   getCollectionsByIds,
   getCurrencyInfo,
   getProductsByIds,
-  listCollections,
   listMarkets,
-  listProducts,
   listShippingMethods,
 } from "../../shopify-api.server";
 import { authenticate } from "../../shopify.server";
+
+const DELETE_MODAL_ID = "delete-campaign-modal";
 
 type CampaignEditLoaderData = {
   campaign: Pick<CampaignDetail, "id" | "name" | "status">;
@@ -74,26 +66,6 @@ type CampaignEditLoaderData = {
 
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const url = new URL(request.url);
-  const resource = url.searchParams.get("resource");
-  const query = String(url.searchParams.get("query") || "").trim();
-
-  if (resource === "products") {
-    const products =
-      query.length < 2 ? [] : (await listProducts(admin, { first: 20, query })).nodes;
-
-    return { resource, products } satisfies ResourceSearchData;
-  }
-
-  if (resource === "collections") {
-    const collections =
-      query.length < 2
-        ? []
-        : (await listCollections(admin, { first: 20, query })).nodes;
-
-    return { resource, collections } satisfies ResourceSearchData;
-  }
-
   const campaignId = decodeCampaignId(params.campaignId);
   const campaign = await loadCampaign(admin, campaignId);
   const { conditions } = campaign.config;
@@ -151,7 +123,7 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   if (actionType === "delete") {
     try {
       await deleteCampaignById(admin, campaignId);
-      return redirect("/app/campaigns?saved=deleted");
+      return redirect(afterSaveUrl(request, "deleted"));
     } catch (error) {
       return {
         errors: [
@@ -189,125 +161,74 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
     };
   }
 
-  return redirect("/app/campaigns?saved=updated");
+  return redirect(afterSaveUrl(request, "updated"));
 };
 
 export default function CampaignEdit() {
   const data = useLoaderData<typeof loader>() as CampaignEditLoaderData;
-  const entitlements = entitlementForPlan(data.plan);
   const actionData = useActionData<typeof action>();
-  const location = useLocation();
+  const { search } = useLocation();
   const navigation = useNavigation();
-  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
-  const isDeleting =
-    navigation.state === "submitting" &&
-    String(navigation.formData?.get("_action") || "") === "delete";
-  const isSaving = navigation.state === "submitting" && !isDeleting;
-
-  useEffect(() => {
-    if (isDeleting) {
-      setDeleteConfirmationOpen(false);
-    }
-  }, [isDeleting]);
+  const deleteFetcher = useFetcher<typeof action>();
+  const isDeleting = deleteFetcher.state !== "idle";
+  const isSaving = navigation.state === "submitting";
+  const errors = [
+    ...(actionData?.errors ?? []),
+    ...(deleteFetcher.data?.errors ?? []),
+  ];
 
   return (
-    <s-page heading={`Edit ${data.campaign.name}`}>
-      <s-section>
-        <Link
-          className={styles.backButton}
-          to={{ pathname: "/app/campaigns", search: location.search }}
+    <s-page heading={data.campaign.name}>
+      <s-link href={`/app/campaigns${search}`} slot="breadcrumb-actions">
+        Discounts
+      </s-link>
+      <s-button
+        command="--show"
+        commandFor={DELETE_MODAL_ID}
+        disabled={flag(isDeleting)}
+        slot="secondary-actions"
+        tone="critical"
+      >
+        Delete
+      </s-button>
+
+      <CampaignForm
+        activeCampaignCount={data.activeCampaignCount}
+        availableCurrencies={data.availableCurrencies}
+        defaultCurrency={data.defaultCurrency}
+        errors={errors}
+        initialExcludedCollections={data.excludedCollections}
+        initialExcludedProducts={data.excludedProducts}
+        initialSelectedCollections={data.selectedCollections}
+        initialSelectedProducts={data.selectedProducts}
+        initialValues={data.initialValues}
+        isSaving={isSaving}
+        markets={data.markets}
+        mode="edit"
+        plan={data.plan}
+        shippingMethods={data.shippingMethods}
+      />
+
+      <s-modal heading="Delete discount?" id={DELETE_MODAL_ID}>
+        <s-paragraph>
+          This will permanently delete &quot;{data.campaign.name}&quot;. Customers
+          will stop receiving it immediately. This action cannot be undone.
+        </s-paragraph>
+        <s-button
+          command="--hide"
+          commandFor={DELETE_MODAL_ID}
+          loading={flag(isDeleting)}
+          onClick={() => deleteFetcher.submit({ _action: "delete" }, { method: "post" })}
+          slot="primary-action"
+          tone="critical"
+          variant="primary"
         >
-          &lt; Back to discounts
-        </Link>
-
-        <div className={styles.pageHeader}>
-          <h1 className={styles.pageTitle}>Edit discount</h1>
-          <p className={styles.sectionDescription}>
-            Update product, order, and shipping discounts with optional
-            conditions and schedules.
-          </p>
-          <p className={styles.planNotice}>
-            Current plan: {entitlements.name} ({entitlements.priceLabel})
-          </p>
-        </div>
-
-        <CampaignForm
-          activeCampaignCount={data.activeCampaignCount}
-          availableCurrencies={data.availableCurrencies}
-          defaultCurrency={data.defaultCurrency}
-          errors={actionData?.errors ?? []}
-          initialExcludedCollections={data.excludedCollections}
-          initialExcludedProducts={data.excludedProducts}
-          initialSelectedCollections={data.selectedCollections}
-          initialSelectedProducts={data.selectedProducts}
-          initialValues={data.initialValues}
-          isSaving={isSaving}
-          markets={data.markets}
-          mode="edit"
-          plan={data.plan}
-          secondaryActions={
-            <button
-              className={styles.deleteButton}
-              onClick={() => setDeleteConfirmationOpen(true)}
-              type="button"
-            >
-              Delete discount
-            </button>
-          }
-          shippingMethods={data.shippingMethods}
-          submitLabel="Save changes"
-        />
-
-        {deleteConfirmationOpen ? (
-          <div
-            aria-labelledby="delete-campaign-title"
-            aria-modal="true"
-            className={styles.modalBackdrop}
-            role="dialog"
-          >
-            <div className={styles.modal}>
-              <div className={styles.modalHeader}>
-                <h2 className={styles.modalTitle} id="delete-campaign-title">
-                  Delete discount?
-                </h2>
-                <button
-                  aria-label="Close delete confirmation"
-                  className={styles.modalClose}
-                  disabled={isDeleting}
-                  onClick={() => setDeleteConfirmationOpen(false)}
-                  type="button"
-                >
-                  ×
-                </button>
-              </div>
-              <p className={styles.modalText}>
-                This will permanently delete &quot;{data.campaign.name}&quot;. This
-                action cannot be undone.
-              </p>
-              <div className={styles.modalActions}>
-                <button
-                  className={styles.secondaryButton}
-                  disabled={isDeleting}
-                  onClick={() => setDeleteConfirmationOpen(false)}
-                  type="button"
-                >
-                  Cancel
-                </button>
-                <Form method="post">
-                  <input name="_action" type="hidden" value="delete" />
-                  <button
-                    className={styles.dangerButton}
-                    disabled={isDeleting}
-                    type="submit"
-                  >
-                    {isDeleting ? "Deleting..." : "Delete discount"}
-                  </button>
-                </Form>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </s-section>
+          Delete discount
+        </s-button>
+        <s-button command="--hide" commandFor={DELETE_MODAL_ID} slot="secondary-actions">
+          Cancel
+        </s-button>
+      </s-modal>
     </s-page>
   );
 }

@@ -4,20 +4,16 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import {
-  Form,
-  Link,
   redirect,
-  useActionData,
+  useFetcher,
   useLoaderData,
   useLocation,
-  useNavigate,
   useNavigation,
   useSearchParams,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useEffect, useState } from "react";
 
-import styles from "./styles.module.css";
 import { getBillingSummary } from "../../billing.server";
 import {
   activeCampaignLimitMessage,
@@ -36,6 +32,7 @@ import {
   saveCampaignStatus,
   type CampaignSummary,
 } from "../../campaign-storage.server";
+import { flag, showToast } from "../../lib/polaris";
 import { authenticate } from "../../shopify.server";
 
 type CampaignsLoaderData = {
@@ -47,10 +44,12 @@ type CampaignsLoaderData = {
 };
 
 const SAVED_MESSAGES: Record<string, string> = {
-  created: "Discount created.",
-  updated: "Discount updated.",
-  deleted: "Discount deleted.",
+  created: "Discount created",
+  updated: "Discount updated",
+  deleted: "Discount deleted",
 };
+
+const DELETE_MODAL_ID = "delete-discount-modal";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -133,356 +132,283 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
-  return { error: null };
+  return { error: null, status };
 };
 
 export default function CampaignsIndex() {
   const { campaigns, missingDiscountScope, plan, trialEndsLabel } =
     useLoaderData<typeof loader>() as CampaignsLoaderData;
-  const actionData = useActionData<typeof action>();
   const entitlements = entitlementForPlan(plan);
-  const location = useLocation();
-  const navigate = useNavigate();
+  const { search } = useLocation();
   const navigation = useNavigation();
   const [searchParams] = useSearchParams();
+  const statusFetcher = useFetcher<typeof action>();
+  const deleteFetcher = useFetcher<typeof action>();
+  const [campaignPendingDelete, setCampaignPendingDelete] =
+    useState<CampaignSummary | null>(null);
+  const link = (pathname: string) => `${pathname}${search}`;
+
   const savedMessage = SAVED_MESSAGES[searchParams.get("saved") ?? ""];
-  const [campaignPendingDelete, setCampaignPendingDelete] = useState<{
-    id: string;
-    name: string;
-  } | null>(null);
+  const returnToShopify = searchParams.get("returnTo") === "discounts";
+  const activeCampaignCount = countActiveCampaigns(campaigns);
+  const draftCount = campaigns.length - activeCampaignCount;
+  const overLimit = activeCampaignsOverLimit(plan, activeCampaignCount);
+  const atLimit = isAtActiveCampaignLimit(plan, activeCampaignCount);
   const submittingCampaignId =
-    navigation.state === "submitting"
-      ? String(navigation.formData?.get("campaignId") || "")
+    statusFetcher.state !== "idle"
+      ? String(statusFetcher.formData?.get("campaignId") || "")
       : "";
-  const isDeletingCampaign =
-    navigation.state === "submitting" &&
-    String(navigation.formData?.get("_action") || "") === "delete";
+  const isDeleting = deleteFetcher.state !== "idle";
   const isOpeningNewCampaign =
     navigation.state === "loading" &&
     navigation.location?.pathname === "/app/campaigns/new";
-  const activeCampaignCount = countActiveCampaigns(campaigns);
-  const inactiveCampaigns = campaigns.length - activeCampaignCount;
-  const overLimit = activeCampaignsOverLimit(plan, activeCampaignCount);
-  const atLimit = isAtActiveCampaignLimit(plan, activeCampaignCount);
-  const coverage = campaigns.filter((campaign) =>
-    /product|order|shipping/i.test(campaign.discountType),
-  ).length;
+  const actionError = statusFetcher.data?.error ?? deleteFetcher.data?.error ?? null;
+
+  // Confirmations arrive as ?saved= from the editor redirects. Show them as a
+  // toast (the Shopify admin pattern) and drop the param so a reload doesn't
+  // repeat it. When the merchant came from Shopify's own Discounts page, send
+  // them back there.
+  useEffect(() => {
+    if (savedMessage) {
+      showToast(savedMessage);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("saved");
+      url.searchParams.delete("returnTo");
+      window.history.replaceState(window.history.state, "", url);
+    }
+
+    if (returnToShopify) {
+      open("shopify://admin/discounts", "_top");
+    }
+  }, [savedMessage, returnToShopify]);
 
   useEffect(() => {
-    if (isDeletingCampaign) {
-      setCampaignPendingDelete(null);
+    if (statusFetcher.state === "idle" && statusFetcher.data && !statusFetcher.data.error) {
+      showToast(
+        statusFetcher.data.status === "active"
+          ? "Discount activated"
+          : "Discount deactivated",
+      );
     }
-  }, [isDeletingCampaign]);
+  }, [statusFetcher.state, statusFetcher.data]);
 
-  const goToNewCampaign = () => {
-    navigate({ pathname: "/app/campaigns/new", search: location.search });
+  const toggleStatus = (campaign: CampaignSummary) => {
+    statusFetcher.submit(
+      {
+        campaignId: campaign.id,
+        status: campaign.status === "active" ? "inactive" : "active",
+      },
+      { method: "post" },
+    );
+  };
+
+  const confirmDelete = () => {
+    if (!campaignPendingDelete) {
+      return;
+    }
+
+    deleteFetcher.submit(
+      { campaignId: campaignPendingDelete.id, _action: "delete" },
+      { method: "post" },
+    );
+    setCampaignPendingDelete(null);
   };
 
   return (
     <s-page heading="Discounts">
-      <s-section>
-        <div className={styles.header}>
-          <div>
-            <span className={styles.headerEyebrow}>Automatic discounts</span>
-            <h1 className={styles.headerTitle}>Your Discounts</h1>
-            <p className={styles.headerDescription}>
-              Create and manage automatic product, order, and shipping discounts
-              for your store.
-            </p>
-          </div>
-          <div className={styles.headerActions}>
-            {trialEndsLabel ? (
-              <span className={styles.trialPill}>
-                {entitlements.name} trial · ends {trialEndsLabel}
-              </span>
-            ) : (
-              <span className={styles.planPill}>
-                {entitlements.name} · {entitlements.priceLabel}
-              </span>
-            )}
-            <button
-              className={styles.headerButton}
-              disabled={isOpeningNewCampaign}
-              onClick={goToNewCampaign}
-              type="button"
-            >
-              {isOpeningNewCampaign ? "Opening..." : "Create discount"}
-            </button>
-          </div>
-        </div>
-      </s-section>
-
-      {savedMessage ? (
-        <s-section>
-          <div className={styles.successSection} role="status">
-            {savedMessage}
-          </div>
-        </s-section>
-      ) : null}
-
-      <s-section>
-        <div className={styles.summaryGrid} aria-label="Discount summary">
-          <div className={`${styles.summaryCard} ${styles.summaryCardActive}`}>
-            <span className={styles.summaryLabel}>Active</span>
-            <strong className={styles.summaryValue}>
-              {activeCampaignCount} / {formatCampaignLimit(entitlements.maxActiveCampaigns)}
-            </strong>
-            <span className={styles.summaryText}>
-              {activeCampaignCount === 1
-                ? "Discount is running"
-                : "Discounts are running"}
-            </span>
-          </div>
-          <div className={`${styles.summaryCard} ${styles.summaryCardDraft}`}>
-            <span className={styles.summaryLabel}>Inactive</span>
-            <strong className={styles.summaryValue}>{inactiveCampaigns}</strong>
-            <span className={styles.summaryText}>
-              {inactiveCampaigns === 1 ? "Draft discount" : "Draft discounts"}
-            </span>
-          </div>
-          <div className={`${styles.summaryCard} ${styles.summaryCardCoverage}`}>
-            <span className={styles.summaryLabel}>Configured</span>
-            <strong className={styles.summaryValue}>{coverage}</strong>
-            <span className={styles.summaryText}>
-              Discounts with product, order, or shipping rules
-            </span>
-          </div>
-        </div>
-      </s-section>
-
-      {overLimit > 0 ? (
-        <s-section>
-          <div className={styles.warningSection} role="alert">
-            <h2 className={styles.warningHeading}>
-              {overLimit === 1
-                ? "1 more discount is active than your plan includes"
-                : `${overLimit} more discounts are active than your plan includes`}
-            </h2>
-            <p>
-              {entitlements.name} includes{" "}
-              {formatCampaignLimit(entitlements.maxActiveCampaigns)} active
-              discount{entitlements.maxActiveCampaigns === 1 ? "" : "s"}. Your
-              existing discounts keep running, but you cannot activate more
-              until you deactivate {overLimit === 1 ? "one" : `${overLimit}`} or{" "}
-              <Link to={{ pathname: "/app/plans", search: location.search }}>
-                upgrade your plan
-              </Link>
-              .
-            </p>
-          </div>
-        </s-section>
-      ) : null}
-
-      {plan !== "enterprise" ? (
-        <s-section>
-          <div className={styles.upgradePanel}>
-            <div>
-              <span className={styles.upgradeEyebrow}>
-                {plan === "free" ? "Free plan" : "Enterprise plan"}
-              </span>
-              <h2 className={styles.upgradeTitle}>
-                {plan === "free"
-                  ? "Unlock advanced discount campaigns"
-                  : "Need unlimited campaigns and priority support?"}
-              </h2>
-              <p className={styles.upgradeText}>
-                {plan === "free"
-                  ? `Pro includes fixed amount discounts, BOGO, volume tiers, shipping discounts, market targeting, scheduling, and up to ${formatCampaignLimit(
-                      PLAN_ENTITLEMENTS.pro.maxActiveCampaigns,
-                    )} active discounts. Try it free for ${PAID_PLAN_TRIAL_DAYS} days.`
-                  : "Enterprise includes unlimited active discounts, all advanced features, and priority support."}
-              </p>
-            </div>
-            <div className={styles.upgradePrice}>
-              <strong>
-                {plan === "free"
-                  ? PLAN_ENTITLEMENTS.pro.priceLabel.replace("/month", "")
-                  : PLAN_ENTITLEMENTS.enterprise.priceLabel.replace("/month", "")}
-              </strong>
-              <span>/ month</span>
-              <Link
-                className={styles.upgradeLink}
-                to={{ pathname: "/app/plans", search: location.search }}
-              >
-                {plan === "free" ? "Start free trial" : "View plans"}
-              </Link>
-            </div>
-          </div>
-        </s-section>
-      ) : null}
+      <s-button
+        href={link("/app/campaigns/new")}
+        loading={flag(isOpeningNewCampaign)}
+        slot="primary-action"
+        variant="primary"
+      >
+        Create discount
+      </s-button>
+      <s-button href={link("/app/plans")} slot="secondary-actions">
+        Plans
+      </s-button>
 
       {missingDiscountScope ? (
-        <s-section>
-          <div className={styles.criticalSection}>
-            <h3 className={styles.criticalHeading}>Discount access required</h3>
-            <p>
-              This app needs permission to read discounts. Reopen or reinstall
-              the app to approve the updated permissions.
-            </p>
-          </div>
-        </s-section>
-      ) : actionData?.error ? (
-        <s-section>
-          <div className={styles.criticalSection}>
-            <h3 className={styles.criticalHeading}>Action needed</h3>
-            <p>{actionData.error}</p>
-          </div>
-        </s-section>
-      ) : campaigns.length === 0 ? (
-        <s-section>
-          <div className={styles.emptyState}>
-            <h3 className={styles.emptyStateHeading}>No discounts yet</h3>
-            <p className={styles.emptyStateText}>
+        <s-banner heading="Discount access required" tone="critical">
+          <s-paragraph>
+            This app needs permission to read discounts. Reopen or reinstall the
+            app to approve the updated permissions.
+          </s-paragraph>
+        </s-banner>
+      ) : null}
+
+      {actionError ? (
+        <s-banner heading="Action needed" tone="critical">
+          <s-paragraph>{actionError}</s-paragraph>
+        </s-banner>
+      ) : null}
+
+      {overLimit > 0 ? (
+        <s-banner
+          heading={
+            overLimit === 1
+              ? "1 more discount is active than your plan includes"
+              : `${overLimit} more discounts are active than your plan includes`
+          }
+          tone="warning"
+        >
+          <s-paragraph>
+            {entitlements.name} includes{" "}
+            {formatCampaignLimit(entitlements.maxActiveCampaigns)} active discount
+            {entitlements.maxActiveCampaigns === 1 ? "" : "s"}. Your existing
+            discounts keep running, but you cannot activate more until you
+            deactivate {overLimit === 1 ? "one" : String(overLimit)} or{" "}
+            <s-link href={link("/app/plans")}>upgrade your plan</s-link>.
+          </s-paragraph>
+        </s-banner>
+      ) : null}
+
+      {plan === "free" && campaigns.length > 0 ? (
+        <s-banner
+          dismissible
+          heading={`Try Pro free for ${PAID_PLAN_TRIAL_DAYS} days`}
+          tone="info"
+        >
+          <s-paragraph>
+            Fixed amount discounts, Buy X get Y, volume tiers, shipping
+            discounts, market targeting, scheduling, and up to{" "}
+            {formatCampaignLimit(PLAN_ENTITLEMENTS.pro.maxActiveCampaigns)} active
+            discounts. <s-link href={link("/app/plans")}>View plans</s-link>
+          </s-paragraph>
+        </s-banner>
+      ) : null}
+
+      {campaigns.length === 0 && !missingDiscountScope ? (
+        <s-section heading="No discounts yet">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
               Create your first discount to get started. Set up product, order,
               or shipping discounts, add conditions, and activate it when ready.
-            </p>
-            <button
-              className={styles.emptyStateButton}
-              disabled={isOpeningNewCampaign}
-              onClick={goToNewCampaign}
-              type="button"
-            >
-              {isOpeningNewCampaign ? "Opening..." : "Create your first discount"}
-            </button>
-          </div>
+              Discounts apply automatically at checkout.
+            </s-paragraph>
+            <s-stack direction="inline" gap="base">
+              <s-button href={link("/app/campaigns/new")} variant="primary">
+                Create your first discount
+              </s-button>
+            </s-stack>
+          </s-stack>
         </s-section>
-      ) : (
-        <s-section>
-          <div className={styles.campaignsContainer}>
-            {campaigns.map((campaign) => {
-              const isActive = campaign.status === "active";
-              const blockedByLimit = !isActive && atLimit;
-
-              return (
-                <div key={campaign.id} className={styles.campaignCard}>
-                  <div className={styles.campaignCardHeader}>
-                    <div className={styles.campaignCardTitle}>
-                      <h3>{campaign.name}</h3>
-                      <p>{campaign.discountType}</p>
-                    </div>
-                    <div
-                      className={
-                        isActive
-                          ? `${styles.statusBadge} ${styles.activeBadge}`
-                          : `${styles.statusBadge} ${styles.inactiveBadge}`
-                      }
-                    >
-                      {isActive ? "Active" : "Inactive"}
-                    </div>
-                  </div>
-                  <div className={styles.campaignMeta}>
-                    <span>Automatic app discount</span>
-                    <span>{campaignStatusDetail(campaign)}</span>
-                  </div>
-                  <div className={styles.campaignCardActions}>
-                    <Link
-                      className={styles.editButton}
-                      to={{
-                        pathname: `/app/campaigns/${encodeURIComponent(campaign.id)}`,
-                        search: location.search,
-                      }}
-                    >
-                      Edit
-                    </Link>
-                    {blockedByLimit ? (
-                      <Link
-                        className={styles.limitButton}
-                        title={activeCampaignLimitMessage(plan)}
-                        to={{ pathname: "/app/plans", search: location.search }}
-                      >
-                        Upgrade to activate
-                      </Link>
-                    ) : (
-                      <Form method="post" style={{ flex: 1 }}>
-                        <input name="campaignId" type="hidden" value={campaign.id} />
-                        <input
-                          name="status"
-                          type="hidden"
-                          value={isActive ? "inactive" : "active"}
-                        />
-                        <button
-                          className={styles.toggleButton}
-                          disabled={submittingCampaignId === campaign.id}
-                          type="submit"
-                        >
-                          {submittingCampaignId === campaign.id
-                            ? "Saving..."
-                            : isActive
-                              ? "Deactivate"
-                              : "Activate"}
-                        </button>
-                      </Form>
-                    )}
-                    <div style={{ flex: 1 }}>
-                      <button
-                        className={styles.deleteButton}
-                        onClick={() =>
-                          setCampaignPendingDelete({
-                            id: campaign.id,
-                            name: campaign.name,
-                          })
-                        }
-                        type="button"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </s-section>
-      )}
-
-      {campaignPendingDelete ? (
-        <div
-          aria-labelledby="delete-campaign-title"
-          aria-modal="true"
-          className={styles.modalBackdrop}
-          role="dialog"
-        >
-          <div className={styles.deleteModal}>
-            <div className={styles.deleteModalHeader}>
-              <h2 id="delete-campaign-title">Delete discount?</h2>
-              <button
-                aria-label="Close delete confirmation"
-                className={styles.modalCloseButton}
-                disabled={isDeletingCampaign}
-                onClick={() => setCampaignPendingDelete(null)}
-                type="button"
-              >
-                ×
-              </button>
-            </div>
-            <p className={styles.deleteModalText}>
-              This will permanently delete &quot;{campaignPendingDelete.name}&quot;.
-              This action cannot be undone.
-            </p>
-            <div className={styles.deleteModalActions}>
-              <button
-                className={styles.cancelButton}
-                disabled={isDeletingCampaign}
-                onClick={() => setCampaignPendingDelete(null)}
-                type="button"
-              >
-                Cancel
-              </button>
-              <Form method="post">
-                <input name="campaignId" type="hidden" value={campaignPendingDelete.id} />
-                <input name="_action" type="hidden" value="delete" />
-                <button
-                  className={styles.deleteButton}
-                  disabled={isDeletingCampaign}
-                  type="submit"
-                >
-                  {isDeletingCampaign ? "Deleting..." : "Delete discount"}
-                </button>
-              </Form>
-            </div>
-          </div>
-        </div>
       ) : null}
+
+      {campaigns.length > 0 ? (
+        <s-section heading="All discounts">
+          <s-stack direction="block" gap="base">
+          <s-stack alignItems="center" direction="inline" gap="small">
+            <s-badge tone={overLimit > 0 ? "warning" : "neutral"}>
+              {activeCampaignCount} of {formatCampaignLimit(entitlements.maxActiveCampaigns)} active
+            </s-badge>
+            <s-badge tone="neutral">
+              {draftCount} draft{draftCount === 1 ? "" : "s"}
+            </s-badge>
+            <s-badge tone={trialEndsLabel ? "info" : "neutral"}>
+              {trialEndsLabel
+                ? `${entitlements.name} trial ends ${trialEndsLabel}`
+                : `${entitlements.name} plan`}
+            </s-badge>
+          </s-stack>
+          <s-table variant="auto">
+            <s-table-header-row>
+              <s-table-header listSlot="primary">Discount</s-table-header>
+              <s-table-header listSlot="labeled">Status</s-table-header>
+              <s-table-header listSlot="labeled">Type</s-table-header>
+              <s-table-header listSlot="inline">Actions</s-table-header>
+            </s-table-header-row>
+            <s-table-body>
+              {campaigns.map((campaign) => {
+                const isActive = campaign.status === "active";
+                const blockedByLimit = !isActive && atLimit;
+                const isSubmitting = submittingCampaignId === campaign.id;
+
+                return (
+                  <s-table-row key={campaign.id}>
+                    <s-table-cell>
+                      <s-stack direction="block" gap="small-300">
+                        <s-link
+                          href={link(`/app/campaigns/${encodeURIComponent(campaign.id)}`)}
+                        >
+                          {campaign.name}
+                        </s-link>
+                        <s-text color="subdued">{campaignStatusDetail(campaign)}</s-text>
+                      </s-stack>
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-badge tone={isActive ? "success" : "neutral"}>
+                        {isActive ? "Active" : "Inactive"}
+                      </s-badge>
+                    </s-table-cell>
+                    <s-table-cell>{campaign.discountType}</s-table-cell>
+                    <s-table-cell>
+                      <s-button-group>
+                        <s-button
+                          href={link(`/app/campaigns/${encodeURIComponent(campaign.id)}`)}
+                          variant="secondary"
+                        >
+                          Edit
+                        </s-button>
+                        {blockedByLimit ? (
+                          <s-button
+                            accessibilityLabel={activeCampaignLimitMessage(plan)}
+                            href={link("/app/plans")}
+                            variant="secondary"
+                          >
+                            Upgrade to activate
+                          </s-button>
+                        ) : (
+                          <s-button
+                            disabled={flag(Boolean(submittingCampaignId))}
+                            loading={flag(isSubmitting)}
+                            onClick={() => toggleStatus(campaign)}
+                            variant="secondary"
+                          >
+                            {isActive ? "Deactivate" : "Activate"}
+                          </s-button>
+                        )}
+                        <s-button
+                          command="--show"
+                          commandFor={DELETE_MODAL_ID}
+                          disabled={flag(isDeleting)}
+                          onClick={() => setCampaignPendingDelete(campaign)}
+                          tone="critical"
+                          variant="tertiary"
+                        >
+                          Delete
+                        </s-button>
+                      </s-button-group>
+                    </s-table-cell>
+                  </s-table-row>
+                );
+              })}
+            </s-table-body>
+          </s-table>
+          </s-stack>
+        </s-section>
+      ) : null}
+
+      <s-modal heading="Delete discount?" id={DELETE_MODAL_ID}>
+        <s-paragraph>
+          This will permanently delete &quot;{campaignPendingDelete?.name ?? ""}
+          &quot;. Customers will stop receiving it immediately. This action cannot
+          be undone.
+        </s-paragraph>
+        <s-button
+          command="--hide"
+          commandFor={DELETE_MODAL_ID}
+          onClick={confirmDelete}
+          slot="primary-action"
+          tone="critical"
+          variant="primary"
+        >
+          Delete discount
+        </s-button>
+        <s-button command="--hide" commandFor={DELETE_MODAL_ID} slot="secondary-actions">
+          Cancel
+        </s-button>
+      </s-modal>
     </s-page>
   );
 }

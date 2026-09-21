@@ -3,47 +3,23 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import {
-  Link,
-  redirect,
-  useActionData,
-  useLoaderData,
-  useLocation,
-  useNavigation,
-} from "react-router";
+import { redirect, useActionData, useLoaderData, useLocation, useNavigation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
-import styles from "../components/campaign-form.module.css";
-import {
-  CampaignForm,
-  emptyCampaignFormInput,
-  type ResourceSearchData,
-} from "../components/campaign-form";
+import { CampaignForm, emptyCampaignFormInput } from "../components/campaign-form";
 import { getCurrentPlan } from "../billing.server";
 import {
+  afterSaveUrl,
   campaignInputFromForm,
   validateCampaignInput,
 } from "../campaign-form.server";
-import {
-  loadActiveCampaignCount,
-  saveNewCampaign,
-} from "../campaign-storage.server";
-import {
-  entitlementForPlan,
-  validateCampaignEntitlements,
-  type AppPlan,
-} from "../entitlements";
+import { loadActiveCampaignCount, saveNewCampaign } from "../campaign-storage.server";
+import { validateCampaignEntitlements, type AppPlan } from "../entitlements";
 import type {
   ShopifyMarketSummary,
   ShopifyShippingMethodSummary,
 } from "../shopify-api.server";
-import {
-  getCurrencyInfo,
-  listCollections,
-  listMarkets,
-  listProducts,
-  listShippingMethods,
-} from "../shopify-api.server";
+import { getCurrencyInfo, listMarkets, listShippingMethods } from "../shopify-api.server";
 import { authenticate } from "../shopify.server";
 
 type NewCampaignLoaderData = {
@@ -57,26 +33,6 @@ type NewCampaignLoaderData = {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const url = new URL(request.url);
-  const resource = url.searchParams.get("resource");
-  const query = String(url.searchParams.get("query") || "").trim();
-
-  if (resource === "products") {
-    const products =
-      query.length < 2 ? [] : (await listProducts(admin, { first: 20, query })).nodes;
-
-    return { resource, products } satisfies ResourceSearchData;
-  }
-
-  if (resource === "collections") {
-    const collections =
-      query.length < 2
-        ? []
-        : (await listCollections(admin, { first: 20, query })).nodes;
-
-    return { resource, collections } satisfies ResourceSearchData;
-  }
-
   const [currencyInfo, shippingMethods, markets, plan, activeCampaignCount] =
     await Promise.all([
       getCurrencyInfo(admin, session.shop),
@@ -121,51 +77,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
-  return redirect("/app/campaigns?saved=created");
+  return redirect(afterSaveUrl(request, "created"));
 };
 
 export default function NewCampaign() {
   const data = useLoaderData<typeof loader>() as NewCampaignLoaderData;
-  const entitlements = entitlementForPlan(data.plan);
   const actionData = useActionData<typeof action>();
-  const location = useLocation();
+  const { search } = useLocation();
   const navigation = useNavigation();
 
   return (
     <s-page heading="Create discount">
-      <s-section>
-        <Link
-          className={styles.backButton}
-          to={{ pathname: "/app/campaigns", search: location.search }}
-        >
-          &lt; Back to discounts
-        </Link>
+      <s-link href={`/app/campaigns${search}`} slot="breadcrumb-actions">
+        Discounts
+      </s-link>
 
-        <div className={styles.pageHeader}>
-          <h1 className={styles.pageTitle}>Create a new discount</h1>
-          <p className={styles.sectionDescription}>
-            Build product, order, and shipping discounts with optional conditions
-            and schedules.
-          </p>
-          <p className={styles.planNotice}>
-            Current plan: {entitlements.name} ({entitlements.priceLabel})
-          </p>
-        </div>
-
-        <CampaignForm
-          activeCampaignCount={data.activeCampaignCount}
-          availableCurrencies={data.availableCurrencies}
-          defaultCurrency={data.defaultCurrency}
-          errors={actionData?.errors ?? []}
-          initialValues={emptyCampaignFormInput()}
-          isSaving={navigation.state === "submitting"}
-          markets={data.markets}
-          mode="create"
-          plan={data.plan}
-          shippingMethods={data.shippingMethods}
-          submitLabel="Save discount"
-        />
-      </s-section>
+      <CampaignForm
+        activeCampaignCount={data.activeCampaignCount}
+        availableCurrencies={data.availableCurrencies}
+        defaultCurrency={data.defaultCurrency}
+        errors={actionData?.errors ?? []}
+        initialValues={emptyCampaignFormInput()}
+        isSaving={navigation.state === "submitting"}
+        markets={data.markets}
+        mode="create"
+        plan={data.plan}
+        shippingMethods={data.shippingMethods}
+      />
     </s-page>
   );
 }

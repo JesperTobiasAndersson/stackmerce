@@ -1,5 +1,20 @@
 import type { CampaignFormInput } from "./campaign-storage.server";
 
+/**
+ * Where to go after saving. Merchants who opened the editor from Shopify's
+ * own Discounts page (via the function's `ui.paths`) are sent back there.
+ */
+export function afterSaveUrl(request: Request, saved: string) {
+  const returnTo = new URL(request.url).searchParams.get("returnTo");
+  const params = new URLSearchParams({ saved });
+
+  if (returnTo === "discounts") {
+    params.set("returnTo", "discounts");
+  }
+
+  return `/app/campaigns?${params.toString()}`;
+}
+
 /** Parses the campaign editor's POST body into the storage input shape. */
 export function campaignInputFromForm(formData: FormData): CampaignFormInput {
   return {

@@ -17,7 +17,12 @@
     "target": "ES2022",
     "baseUrl": ".",
     "ignoreDeprecations": "5.0",
-    "types": ["@react-router/node", "vite/client", "@shopify/polaris-types"],
+    "types": [
+      "@react-router/node",
+      "vite/client",
+      "@shopify/polaris-types",
+      "@shopify/app-bridge-types"
+    ],
     "rootDirs": [".", "./.react-router/types"]
   }
 }

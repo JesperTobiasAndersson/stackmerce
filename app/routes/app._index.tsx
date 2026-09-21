@@ -1,8 +1,7 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData, useLocation } from "react-router";
+import { useLoaderData, useLocation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
-import styles from "./app._index/styles.module.css";
 import { getBillingSummary } from "../billing.server";
 import { loadAllCampaigns } from "../campaign-storage.server";
 import {
@@ -51,132 +50,147 @@ export default function AppIndex() {
   const { plan, trialEndsLabel, totalCampaigns, activeCampaigns, overLimit } =
     useLoaderData<typeof loader>() as OverviewLoaderData;
   const entitlements = entitlementForPlan(plan);
-  const location = useLocation();
-  const link = (pathname: string) => ({ pathname, search: location.search });
+  const { search } = useLocation();
+  const link = (pathname: string) => `${pathname}${search}`;
   const hasCampaigns = totalCampaigns > 0;
-
-  const summaryItems = [
-    {
-      label: "Active discounts",
-      value: `${activeCampaigns} / ${formatCampaignLimit(entitlements.maxActiveCampaigns)}`,
-      description:
-        overLimit > 0
-          ? `${overLimit} more than ${entitlements.name} includes. Deactivate or upgrade.`
-          : activeCampaigns === 0
-            ? "Nothing is discounting checkout right now."
-            : "Applied automatically at checkout.",
-    },
-    {
-      label: "Drafts",
-      value: String(totalCampaigns - activeCampaigns),
-      description: "Saved but not applied. Activate them when ready.",
-    },
-    {
-      label: "Plan",
-      value: entitlements.name,
-      description: trialEndsLabel
-        ? `Free trial ends ${trialEndsLabel}.`
-        : plan === "free"
-          ? `Pro adds fixed amounts, BOGO, volume tiers, shipping, markets, and scheduling. ${PAID_PLAN_TRIAL_DAYS}-day free trial.`
-          : entitlements.priceLabel,
-    },
-  ];
-
-  const launchItems = [
-    {
-      eyebrow: hasCampaigns ? "Create" : "Start here",
-      title: hasCampaigns ? "Create another discount" : "Create your first discount",
-      description:
-        "Percentage off products or the whole order, limited to the products, collections, and cart minimums you choose.",
-      href: "/app/campaigns/new",
-      cta: "Create discount",
-    },
-    {
-      eyebrow: "Manage",
-      title: "Review what is live",
-      description: hasCampaigns
-        ? `${activeCampaigns} of ${totalCampaigns} discount${
-            totalCampaigns === 1 ? "" : "s"
-          } active. Activate, pause, edit, or delete from one list.`
-        : "Your discounts will show up here with their status once you create one.",
-      href: "/app/campaigns",
-      cta: "Open discounts",
-    },
-    {
-      eyebrow: plan === "free" ? "Upgrade" : "Plan",
-      title:
-        plan === "free"
-          ? "Try Pro free for 7 days"
-          : plan === "pro"
-            ? "Need more than 25 active discounts?"
-            : "Manage your subscription",
-      description:
-        plan === "free"
-          ? `Fixed amounts, Buy X get Y, volume tiers, shipping discounts, market targeting, scheduling, and up to ${formatCampaignLimit(
-              PLAN_ENTITLEMENTS.pro.maxActiveCampaigns,
-            )} active discounts.`
-          : plan === "pro"
-            ? "Enterprise removes the active discount cap and adds priority support."
-            : "You are on Enterprise with unlimited active discounts.",
-      href: "/app/plans",
-      cta: plan === "free" ? "Start free trial" : "View plans",
-    },
-  ];
+  const drafts = totalCampaigns - activeCampaigns;
 
   return (
     <s-page heading="Overview">
-      <s-section>
-        <div className={styles.header}>
-          <div>
-            <span className={styles.eyebrow}>Discount operations</span>
-            <h1 className={styles.title}>
-              {hasCampaigns
-                ? "Your automatic discounts at a glance"
-                : "Start building discounts inside Shopify Admin"}
-            </h1>
-            <p className={styles.description}>
-              Discounts are applied automatically at checkout by a Shopify
-              Function, so there are no codes for customers to enter.
-            </p>
-          </div>
-          <div className={styles.headerActions}>
-            <Link className={styles.primaryAction} to={link("/app/campaigns/new")}>
-              Create discount
-            </Link>
-            <Link className={styles.secondaryAction} to={link("/app/campaigns")}>
-              Browse discounts
-            </Link>
-          </div>
-        </div>
+      <s-button slot="primary-action" href={link("/app/campaigns/new")} variant="primary">
+        Create discount
+      </s-button>
+      <s-button slot="secondary-actions" href={link("/app/campaigns")}>
+        View discounts
+      </s-button>
+
+      {overLimit > 0 ? (
+        <s-banner heading="More discounts are active than your plan includes" tone="warning">
+          <s-paragraph>
+            {entitlements.name} includes{" "}
+            {formatCampaignLimit(entitlements.maxActiveCampaigns)} active discount
+            {entitlements.maxActiveCampaigns === 1 ? "" : "s"}; {activeCampaigns} are
+            active. Deactivate {overLimit} in{" "}
+            <s-link href={link("/app/campaigns")}>Discounts</s-link> or{" "}
+            <s-link href={link("/app/plans")}>upgrade your plan</s-link>.
+          </s-paragraph>
+        </s-banner>
+      ) : null}
+
+      <s-section heading="At a glance">
+        <s-grid gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))" gap="base">
+          <MetricCard
+            label="Active discounts"
+            value={`${activeCampaigns} / ${formatCampaignLimit(entitlements.maxActiveCampaigns)}`}
+            detail={
+              activeCampaigns === 0
+                ? "Nothing is discounting checkout right now."
+                : "Applied automatically at checkout."
+            }
+          />
+          <MetricCard
+            label="Drafts"
+            value={String(drafts)}
+            detail="Saved but not applied. Activate them when ready."
+          />
+          <MetricCard
+            label="Plan"
+            value={entitlements.name}
+            detail={
+              trialEndsLabel
+                ? `Free trial ends ${trialEndsLabel}.`
+                : plan === "free"
+                  ? `${PAID_PLAN_TRIAL_DAYS}-day free trial of Pro available.`
+                  : entitlements.priceLabel
+            }
+          />
+        </s-grid>
       </s-section>
 
-      <s-section>
-        <div className={styles.summaryGrid} aria-label="Overview summary">
-          {summaryItems.map((item) => (
-            <div className={styles.summaryCard} key={item.label}>
-              <span className={styles.summaryLabel}>{item.label}</span>
-              <strong className={styles.summaryValue}>{item.value}</strong>
-              <span className={styles.summaryText}>{item.description}</span>
-            </div>
-          ))}
-        </div>
-      </s-section>
-
-      <s-section>
-        <div className={styles.cardGrid}>
-          {launchItems.map((item) => (
-            <article className={styles.card} key={item.title}>
-              <span className={styles.cardEyebrow}>{item.eyebrow}</span>
-              <h2 className={styles.cardTitle}>{item.title}</h2>
-              <p className={styles.cardDescription}>{item.description}</p>
-              <Link className={styles.cardLink} to={link(item.href)}>
-                {item.cta}
-              </Link>
-            </article>
-          ))}
-        </div>
+      <s-section heading={hasCampaigns ? "Next steps" : "Get started"}>
+        <s-stack direction="block" gap="base">
+          <StepCard
+            title={hasCampaigns ? "Create another discount" : "Create your first discount"}
+            description="Percentage off products or the whole order, limited to the products, collections, and cart minimums you choose. Discounts apply automatically at checkout; customers never enter a code."
+            href={link("/app/campaigns/new")}
+            cta="Create discount"
+          />
+          <StepCard
+            title="Review what is live"
+            description={
+              hasCampaigns
+                ? `${activeCampaigns} of ${totalCampaigns} discount${
+                    totalCampaigns === 1 ? "" : "s"
+                  } active. Activate, pause, edit, or delete from one list.`
+                : "Your discounts will show up in the Discounts list with their status once you create one."
+            }
+            href={link("/app/campaigns")}
+            cta="Open discounts"
+          />
+          {plan === "free" ? (
+            <StepCard
+              title={`Try Pro free for ${PAID_PLAN_TRIAL_DAYS} days`}
+              description={`Fixed amounts, Buy X get Y, volume tiers, shipping discounts, market targeting, scheduling, and up to ${formatCampaignLimit(
+                PLAN_ENTITLEMENTS.pro.maxActiveCampaigns,
+              )} active discounts. ${PLAN_ENTITLEMENTS.pro.priceLabel} after the trial, cancel any time.`}
+              href={link("/app/plans")}
+              cta="Start free trial"
+            />
+          ) : plan === "pro" ? (
+            <StepCard
+              title="Need more than 25 active discounts?"
+              description="Enterprise removes the active discount cap and adds priority support."
+              href={link("/app/plans")}
+              cta="View plans"
+            />
+          ) : null}
+        </s-stack>
       </s-section>
     </s-page>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <s-box border="base" borderRadius="base" padding="base">
+      <s-stack direction="block" gap="small-200">
+        <s-text color="subdued">{label}</s-text>
+        <s-heading>{value}</s-heading>
+        <s-text color="subdued">{detail}</s-text>
+      </s-stack>
+    </s-box>
+  );
+}
+
+function StepCard({
+  title,
+  description,
+  href,
+  cta,
+}: {
+  title: string;
+  description: string;
+  href: string;
+  cta: string;
+}) {
+  return (
+    <s-box border="base" borderRadius="base" padding="base">
+      <s-grid gridTemplateColumns="1fr auto" gap="base" alignItems="center">
+        <s-stack direction="block" gap="small-200">
+          <s-text type="strong">{title}</s-text>
+          <s-text color="subdued">{description}</s-text>
+        </s-stack>
+        <s-button href={href}>{cta}</s-button>
+      </s-grid>
+    </s-box>
   );
 }
 

@@ -24,3 +24,9 @@ description = "t:description"
   [extensions.input.variables]
   namespace = "$app:discount-campaign"
   key = "input_variables"
+
+  # Lists this discount type in Shopify Admin > Discounts > "Create discount"
+  # and opens the app's editor when a merchant clicks one of its discounts.
+  [extensions.ui.paths]
+  create = "/app/discount/:functionId/new"
+  details = "/app/discount/:functionId/:id"
