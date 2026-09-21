@@ -2,10 +2,13 @@ import type { CampaignFormInput } from "./campaign-storage.server";
 
 export type AppPlan = "free" | "pro" | "enterprise";
 
+export const PAID_PLAN_TRIAL_DAYS = 7;
+
 export interface PlanEntitlements {
   key: AppPlan;
   name: string;
   priceLabel: string;
+  monthlyPrice: number;
   maxActiveCampaigns: number;
   fixedAmountDiscounts: boolean;
   bogoDiscounts: boolean;
@@ -22,6 +25,7 @@ export const PLAN_ENTITLEMENTS: Record<AppPlan, PlanEntitlements> = {
     key: "free",
     name: "Free",
     priceLabel: "$0/month",
+    monthlyPrice: 0,
     maxActiveCampaigns: 1,
     fixedAmountDiscounts: false,
     bogoDiscounts: false,
@@ -36,6 +40,7 @@ export const PLAN_ENTITLEMENTS: Record<AppPlan, PlanEntitlements> = {
     key: "pro",
     name: "Pro",
     priceLabel: "$14.90/month",
+    monthlyPrice: 14.9,
     maxActiveCampaigns: 25,
     fixedAmountDiscounts: true,
     bogoDiscounts: true,
@@ -50,6 +55,7 @@ export const PLAN_ENTITLEMENTS: Record<AppPlan, PlanEntitlements> = {
     key: "enterprise",
     name: "Enterprise",
     priceLabel: "$39.90/month",
+    monthlyPrice: 39.9,
     maxActiveCampaigns: Number.POSITIVE_INFINITY,
     fixedAmountDiscounts: true,
     bogoDiscounts: true,
@@ -66,8 +72,91 @@ export function entitlementForPlan(plan: AppPlan) {
   return PLAN_ENTITLEMENTS[plan];
 }
 
+/** Client-safe: the list page and overview count from loader data. */
+export function countActiveCampaigns(campaigns: Array<{ status: string }>) {
+  return campaigns.filter((campaign) => campaign.status === "active").length;
+}
+
 export function formatCampaignLimit(limit: number) {
   return Number.isFinite(limit) ? String(limit) : "Unlimited";
+}
+
+export function activeCampaignLimitMessage(plan: AppPlan) {
+  const entitlements = entitlementForPlan(plan);
+  const limit = entitlements.maxActiveCampaigns;
+
+  return `${entitlements.name} includes ${formatCampaignLimit(limit)} active discount${
+    limit === 1 ? "" : "s"
+  }. Upgrade to activate more discounts.`;
+}
+
+/** True when activating one more campaign would exceed the plan's limit. */
+export function isAtActiveCampaignLimit(plan: AppPlan, activeCampaignCount: number) {
+  return activeCampaignCount >= entitlementForPlan(plan).maxActiveCampaigns;
+}
+
+/** How many active campaigns exceed the plan (after a downgrade). */
+export function activeCampaignsOverLimit(plan: AppPlan, activeCampaignCount: number) {
+  return Math.max(
+    0,
+    activeCampaignCount - entitlementForPlan(plan).maxActiveCampaigns,
+  );
+}
+
+/**
+ * Names of Pro/Enterprise features a campaign uses that the plan does not
+ * include. Empty when the campaign is fully allowed on the plan.
+ */
+export function lockedFeaturesForCampaign(
+  input: CampaignFormInput,
+  plan: AppPlan,
+): string[] {
+  const entitlements = entitlementForPlan(plan);
+  const locked: string[] = [];
+
+  if (
+    !entitlements.fixedAmountDiscounts &&
+    (input.productDiscountType === "fixed_amount" ||
+      input.orderDiscountType === "fixed_amount" ||
+      input.shippingDiscountType === "fixed_amount")
+  ) {
+    locked.push("Fixed amount discounts");
+  }
+
+  if (
+    !entitlements.bogoDiscounts &&
+    input.productDiscountType === "buy_one_get_one_free"
+  ) {
+    locked.push("Buy X Get Y discounts");
+  }
+
+  if (!entitlements.volumeTiers && input.productDiscountType === "volume_tier") {
+    locked.push("Volume tier discounts");
+  }
+
+  if (!entitlements.shippingDiscounts && input.shippingDiscountType !== "none") {
+    locked.push("Shipping discounts");
+  }
+
+  if (!entitlements.marketTargeting && input.marketHandle) {
+    locked.push("Market targeting");
+  }
+
+  if (!entitlements.shippingMethodTargeting && input.shippingDeliveryOptionHandle) {
+    locked.push("Shipping method targeting");
+  }
+
+  if (!entitlements.scheduling && (input.startsAt || input.endsAt)) {
+    locked.push("Scheduling");
+  }
+
+  return locked;
+}
+
+export function lockedFeatureMessage(feature: string) {
+  const verb = feature.endsWith("s") ? "are" : "is";
+
+  return `${feature} ${verb} available on Pro and Enterprise.`;
 }
 
 export function validateCampaignEntitlements({
@@ -81,57 +170,21 @@ export function validateCampaignEntitlements({
   input: CampaignFormInput;
   plan: AppPlan;
 }) {
-  const entitlements = entitlementForPlan(plan);
   const errors: string[] = [];
-  const projectedActiveCampaignCount =
-    input.status === "active" && !currentCampaignIsActive
-      ? activeCampaignCount + 1
-      : activeCampaignCount;
 
-  if (projectedActiveCampaignCount > entitlements.maxActiveCampaigns) {
-    errors.push(
-      `${entitlements.name} includes ${formatCampaignLimit(
-        entitlements.maxActiveCampaigns,
-      )} active discount${
-        entitlements.maxActiveCampaigns === 1 ? "" : "s"
-      }. Upgrade to activate more discounts.`,
-    );
-  }
-
+  // Only *newly* activating a campaign counts against the limit. A merchant who
+  // downgraded while over the limit can still edit campaigns that are already
+  // active; the list page tells them to deactivate the extras.
   if (
-    !entitlements.fixedAmountDiscounts &&
-    (input.productDiscountType === "fixed_amount" ||
-      input.orderDiscountType === "fixed_amount" ||
-      input.shippingDiscountType === "fixed_amount")
+    input.status === "active" &&
+    !currentCampaignIsActive &&
+    isAtActiveCampaignLimit(plan, activeCampaignCount)
   ) {
-    errors.push("Fixed amount discounts are available on Pro and Enterprise.");
+    errors.push(activeCampaignLimitMessage(plan));
   }
 
-  if (
-    !entitlements.bogoDiscounts &&
-    input.productDiscountType === "buy_one_get_one_free"
-  ) {
-    errors.push("Buy X Get Y discounts are available on Pro and Enterprise.");
-  }
-
-  if (!entitlements.volumeTiers && input.productDiscountType === "volume_tier") {
-    errors.push("Volume tier discounts are available on Pro and Enterprise.");
-  }
-
-  if (!entitlements.shippingDiscounts && input.shippingDiscountType !== "none") {
-    errors.push("Shipping discounts are available on Pro and Enterprise.");
-  }
-
-  if (!entitlements.marketTargeting && input.marketHandle) {
-    errors.push("Market targeting is available on Pro and Enterprise.");
-  }
-
-  if (!entitlements.shippingMethodTargeting && input.shippingDeliveryOptionHandle) {
-    errors.push("Shipping method targeting is available on Pro and Enterprise.");
-  }
-
-  if (!entitlements.scheduling && (input.startsAt || input.endsAt)) {
-    errors.push("Scheduling discounts is available on Pro and Enterprise.");
+  for (const feature of lockedFeaturesForCampaign(input, plan)) {
+    errors.push(lockedFeatureMessage(feature));
   }
 
   return errors;

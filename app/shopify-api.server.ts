@@ -86,7 +86,10 @@ export interface ShopifyConnectionResult<TNode> {
 export interface ShopifyCampaignSummary {
   id: string;
   name: string;
-  status: string;
+  /** App status: "active" only when the config is active and Shopify has the discount ACTIVE. */
+  status: "active" | "inactive";
+  /** Raw Shopify discount status: ACTIVE, EXPIRED, or SCHEDULED. */
+  shopifyStatus: string;
   discountType: string;
   functionId: string;
 }
@@ -153,6 +156,12 @@ export interface ListShopifyResourcesOptions {
 }
 
 const DEFAULT_PAGE_SIZE = 25;
+// discountNodes returns every discount on the store (codes, native automatic
+// discounts, other apps). Restrict the query to our kind so a page is never
+// filled with discounts we then throw away.
+const APP_DISCOUNTS_QUERY_FILTER = "type:app method:automatic";
+const CAMPAIGN_PAGE_SIZE = 100;
+const MAX_CAMPAIGN_PAGES = 10;
 const CURRENCY_CACHE_TTL_MS = 10 * 60_000;
 const SHIPPING_METHODS_CACHE_TTL_MS = 10 * 60_000;
 const MARKETS_CACHE_TTL_MS = 10 * 60_000;
@@ -351,6 +360,34 @@ const DELETE_AUTOMATIC_DISCOUNT_MUTATION = `#graphql
   mutation DeleteAutomaticDiscount($id: ID!) {
     discountAutomaticDelete(id: $id) {
       deletedAutomaticDiscountId
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const ACTIVATE_AUTOMATIC_DISCOUNT_MUTATION = `#graphql
+  mutation ActivateAutomaticDiscount($id: ID!) {
+    discountAutomaticActivate(id: $id) {
+      automaticDiscountNode {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const DEACTIVATE_AUTOMATIC_DISCOUNT_MUTATION = `#graphql
+  mutation DeactivateAutomaticDiscount($id: ID!) {
+    discountAutomaticDeactivate(id: $id) {
+      automaticDiscountNode {
+        id
+      }
       userErrors {
         field
         message
@@ -588,13 +625,42 @@ export async function listCampaigns(
 ): Promise<ShopifyConnectionResult<ShopifyCampaignSummary>> {
   const data = await shopifyGraphql<{
     discountNodes: ShopifyConnectionResult<DiscountNode>;
-  }>(admin, DISCOUNT_CAMPAIGNS_QUERY, connectionVariables(options));
+  }>(admin, DISCOUNT_CAMPAIGNS_QUERY, {
+    ...connectionVariables(options),
+    query: [APP_DISCOUNTS_QUERY_FILTER, options.query].filter(Boolean).join(" "),
+  });
 
   return {
     nodes: data.discountNodes.nodes.flatMap(campaignFromDiscountNode),
     pageInfo: data.discountNodes.pageInfo,
   };
 }
+
+/**
+ * Every campaign the app manages on this store. Walks the connection so the
+ * list page and the active-campaign limit never miss campaigns past page one.
+ */
+export async function listAllCampaigns(
+  admin: ShopifyAdminClient,
+): Promise<ShopifyCampaignSummary[]> {
+  const campaigns: ShopifyCampaignSummary[] = [];
+  let after: string | null = null;
+
+  for (let page = 0; page < MAX_CAMPAIGN_PAGES; page += 1) {
+    const result: ShopifyConnectionResult<ShopifyCampaignSummary> =
+      await listCampaigns(admin, { first: CAMPAIGN_PAGE_SIZE, after });
+    campaigns.push(...result.nodes);
+
+    if (!result.pageInfo.hasNextPage || !result.pageInfo.endCursor) {
+      break;
+    }
+
+    after = result.pageInfo.endCursor;
+  }
+
+  return campaigns;
+}
+
 
 export async function getCampaign(
   admin: ShopifyAdminClient,
@@ -666,6 +732,17 @@ export async function createCampaign(
     throw new Error("Shopify did not return the created campaign.");
   }
 
+  // Shopify creates automatic discounts as ACTIVE. Keep its status in step with
+  // ours so Shopify Admin > Discounts shows the same thing the app does and the
+  // function is not invoked for drafts.
+  if (input.status === "inactive") {
+    await setShopifyDiscountActive(
+      admin,
+      result.automaticAppDiscount.discountId,
+      false,
+    );
+  }
+
   return result.automaticAppDiscount;
 }
 
@@ -673,8 +750,9 @@ export async function updateCampaign(
   admin: ShopifyAdminClient,
   id: string,
   input: CreateCampaignInput,
-  existingConfig: CampaignConfig,
+  existingCampaign: ShopifyCampaignDetail,
 ) {
+  const existingConfig = existingCampaign.config;
   const config: CampaignConfig = {
     ...existingConfig,
     name: input.name,
@@ -806,7 +884,44 @@ export async function updateCampaign(
     throw new Error("Shopify did not return the updated campaign.");
   }
 
+  const shouldBeActive = input.status === "active";
+  if (shouldBeActive !== (existingCampaign.shopifyStatus === "ACTIVE")) {
+    await setShopifyDiscountActive(admin, id, shouldBeActive);
+  }
+
   return result.automaticAppDiscount;
+}
+
+async function setShopifyDiscountActive(
+  admin: ShopifyAdminClient,
+  id: string,
+  active: boolean,
+) {
+  type StatusPayload = {
+    automaticDiscountNode: { id: string } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+  const data = await shopifyGraphql<{
+    discountAutomaticActivate?: StatusPayload;
+    discountAutomaticDeactivate?: StatusPayload;
+  }>(
+    admin,
+    active
+      ? ACTIVATE_AUTOMATIC_DISCOUNT_MUTATION
+      : DEACTIVATE_AUTOMATIC_DISCOUNT_MUTATION,
+    { id },
+  );
+  const result = active
+    ? data.discountAutomaticActivate
+    : data.discountAutomaticDeactivate;
+
+  if (result?.userErrors.length) {
+    throw new Error(
+      `Saved, but could not ${active ? "activate" : "deactivate"} the discount in Shopify: ${result.userErrors
+        .map((error) => error.message)
+        .join("; ")}`,
+    );
+  }
 }
 
 export async function updateCampaignStatus(
@@ -819,65 +934,69 @@ export async function updateCampaignStatus(
   return updateCampaign(
     admin,
     id,
-    {
-      name: campaign.name,
-      status,
-      productDiscountType: campaign.config.productDiscount.type,
-      productDiscountPercentage: campaign.config.productDiscount.percentage,
-      productDiscountFixedAmount:
-        campaign.config.productDiscount.fixedAmount?.amount,
-      productDiscountFixedCurrencyCode:
-        campaign.config.productDiscount.fixedAmount?.currencyCode,
-      productDiscountBuyQuantity: campaign.config.productDiscount.buyQuantity,
-      productDiscountFreeQuantity: campaign.config.productDiscount.freeQuantity,
-      productDiscountVolumeTiers: campaign.config.productDiscount.volumeTiers,
-      orderDiscountType: campaign.config.orderDiscount?.type ?? "none",
-      orderDiscountPercentage: campaign.config.orderDiscount?.percentage,
-      orderDiscountMaximumAmount:
-        campaign.config.orderDiscount?.maximumDiscountAmount?.amount,
-      orderDiscountMaximumCurrencyCode:
-        campaign.config.orderDiscount?.maximumDiscountAmount?.currencyCode,
-      orderDiscountFixedAmount:
-        campaign.config.orderDiscount?.fixedAmount?.amount,
-      orderDiscountFixedCurrencyCode:
-        campaign.config.orderDiscount?.fixedAmount?.currencyCode,
-      shippingDiscountType: campaign.config.shippingDiscount.type,
-      shippingDiscountPercentage: campaign.config.shippingDiscount.percentage,
-      shippingDiscountFixedAmount:
-        campaign.config.shippingDiscount.fixedAmount?.amount,
-      shippingDiscountFixedCurrencyCode:
-        campaign.config.shippingDiscount.fixedAmount?.currencyCode,
-      shippingDeliveryOptionHandle:
-        campaign.config.shippingDiscount.deliveryOptionHandles?.[0],
-      shippingDeliveryOptionTitle:
-        campaign.config.shippingDiscount.deliveryOptionTitles?.[0],
-      marketHandle:
-        campaign.config.conditions.marketHandles?.[0] ??
-        campaign.config.shippingDiscount.marketHandles?.[0],
-      marketName:
-        campaign.config.conditions.marketNames?.[0] ??
-        campaign.config.shippingDiscount.marketNames?.[0],
-      combinesWithOrderDiscounts:
-        campaign.config.combinesWith?.orderDiscounts ?? false,
-      combinesWithProductDiscounts:
-        campaign.config.combinesWith?.productDiscounts ?? true,
-      combinesWithShippingDiscounts:
-        campaign.config.combinesWith?.shippingDiscounts ?? true,
-      productIds: campaign.config.conditions.productIds,
-      collectionIds: campaign.config.conditions.collectionIds,
-      excludedProductIds: campaign.config.conditions.excludedProductIds ?? [],
-      excludedCollectionIds:
-        campaign.config.conditions.excludedCollectionIds ?? [],
-      minimumCartSubtotalAmount:
-        campaign.config.conditions.minimumCartSubtotal?.amount,
-      minimumCartSubtotalCurrencyCode:
-        campaign.config.conditions.minimumCartSubtotal?.currencyCode,
-      minimumCartQuantity: campaign.config.conditions.minimumCartQuantity,
-      startsAt: campaign.config.conditions.startsAt,
-      endsAt: campaign.config.conditions.endsAt,
-    },
-    campaign.config,
+    campaignInputFromConfig(campaign.config, { name: campaign.name, status }),
+    campaign,
   );
+}
+
+/**
+ * Flattens a stored campaign config back into the form/input shape. Used to
+ * pre-fill the edit form and to re-save a campaign with only its status changed.
+ */
+export function campaignInputFromConfig(
+  config: CampaignConfig,
+  overrides: Partial<Pick<CreateCampaignInput, "name" | "status">> = {},
+): CreateCampaignInput {
+  return {
+    name: overrides.name ?? config.name,
+    status: overrides.status ?? config.status,
+    productDiscountType: config.productDiscount.type,
+    productDiscountPercentage: config.productDiscount.percentage,
+    productDiscountFixedAmount: config.productDiscount.fixedAmount?.amount,
+    productDiscountFixedCurrencyCode:
+      config.productDiscount.fixedAmount?.currencyCode,
+    productDiscountBuyQuantity: config.productDiscount.buyQuantity,
+    productDiscountFreeQuantity: config.productDiscount.freeQuantity,
+    productDiscountVolumeTiers: config.productDiscount.volumeTiers,
+    orderDiscountType: config.orderDiscount?.type ?? "none",
+    orderDiscountPercentage: config.orderDiscount?.percentage,
+    orderDiscountMaximumAmount:
+      config.orderDiscount?.maximumDiscountAmount?.amount,
+    orderDiscountMaximumCurrencyCode:
+      config.orderDiscount?.maximumDiscountAmount?.currencyCode,
+    orderDiscountFixedAmount: config.orderDiscount?.fixedAmount?.amount,
+    orderDiscountFixedCurrencyCode:
+      config.orderDiscount?.fixedAmount?.currencyCode,
+    shippingDiscountType: config.shippingDiscount.type,
+    shippingDiscountPercentage: config.shippingDiscount.percentage,
+    shippingDiscountFixedAmount: config.shippingDiscount.fixedAmount?.amount,
+    shippingDiscountFixedCurrencyCode:
+      config.shippingDiscount.fixedAmount?.currencyCode,
+    shippingDeliveryOptionHandle:
+      config.shippingDiscount.deliveryOptionHandles?.[0],
+    shippingDeliveryOptionTitle:
+      config.shippingDiscount.deliveryOptionTitles?.[0],
+    marketHandle:
+      config.conditions.marketHandles?.[0] ??
+      config.shippingDiscount.marketHandles?.[0],
+    marketName:
+      config.conditions.marketNames?.[0] ??
+      config.shippingDiscount.marketNames?.[0],
+    combinesWithOrderDiscounts: config.combinesWith?.orderDiscounts ?? false,
+    combinesWithProductDiscounts: config.combinesWith?.productDiscounts ?? true,
+    combinesWithShippingDiscounts:
+      config.combinesWith?.shippingDiscounts ?? true,
+    productIds: config.conditions.productIds ?? [],
+    collectionIds: config.conditions.collectionIds ?? [],
+    excludedProductIds: config.conditions.excludedProductIds ?? [],
+    excludedCollectionIds: config.conditions.excludedCollectionIds ?? [],
+    minimumCartSubtotalAmount: config.conditions.minimumCartSubtotal?.amount,
+    minimumCartSubtotalCurrencyCode:
+      config.conditions.minimumCartSubtotal?.currencyCode,
+    minimumCartQuantity: config.conditions.minimumCartQuantity,
+    startsAt: config.conditions.startsAt,
+    endsAt: config.conditions.endsAt,
+  };
 }
 
 async function shopifyGraphql<TData>(
@@ -929,11 +1048,19 @@ function campaignFromDiscountNode(
     return [];
   }
 
+  const shopifyStatus = discount.status ?? "ACTIVE";
+
   return [
     {
       id: node.id,
       name: discount.title ?? "Untitled campaign",
-      status: config.status ?? "inactive",
+      // A campaign only discounts anything when both the config and Shopify
+      // agree it is active (a merchant can deactivate it in Shopify Admin).
+      status:
+        config.status === "active" && shopifyStatus === "ACTIVE"
+          ? "active"
+          : "inactive",
+      shopifyStatus,
       discountType: campaignDiscountType(config),
       functionId: discount.appDiscountType?.functionId ?? "",
     },

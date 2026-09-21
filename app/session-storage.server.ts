@@ -3,7 +3,7 @@ import {
   fileSessionStorage,
   type SessionStorageExtras,
 } from "./file-session-storage.server";
-import { firestoreSessionStorage } from "./firestore-session-storage.server";
+import { neonSessionStorage } from "./neon-session-storage.server";
 
 export type AppSessionStorage = SessionStorage & SessionStorageExtras;
 
@@ -12,13 +12,21 @@ function selectedBackend() {
     return process.env.SESSION_STORAGE_BACKEND.toLowerCase();
   }
 
-  return process.env.NODE_ENV === "production" ? "firestore" : "file";
+  // Vercel sets VERCEL=1 in every deployment (preview and production), and the
+  // function filesystem is read-only, so the file store is never an option there.
+  return process.env.NODE_ENV === "production" || process.env.VERCEL
+    ? "neon"
+    : "file";
 }
 
 function createSessionStorage(): AppSessionStorage {
-  return selectedBackend() === "firestore"
-    ? firestoreSessionStorage
-    : fileSessionStorage;
+  const backend = selectedBackend();
+
+  if (backend === "neon" || backend === "postgres") {
+    return neonSessionStorage;
+  }
+
+  return fileSessionStorage;
 }
 
 export const appSessionStorage = createSessionStorage();

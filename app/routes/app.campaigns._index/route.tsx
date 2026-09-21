@@ -12,37 +12,71 @@ import {
   useLocation,
   useNavigate,
   useNavigation,
+  useSearchParams,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useEffect, useState } from "react";
 
 import styles from "./styles.module.css";
-import { getCurrentPlan } from "../../billing.server";
+import { getBillingSummary } from "../../billing.server";
 import {
+  activeCampaignLimitMessage,
+  activeCampaignsOverLimit,
+  countActiveCampaigns,
   entitlementForPlan,
   formatCampaignLimit,
+  isAtActiveCampaignLimit,
+  PAID_PLAN_TRIAL_DAYS,
+  PLAN_ENTITLEMENTS,
   type AppPlan,
 } from "../../entitlements";
 import {
-  loadCampaigns,
-  saveCampaignStatus,
   deleteCampaignById,
+  loadAllCampaigns,
+  saveCampaignStatus,
+  type CampaignSummary,
 } from "../../campaign-storage.server";
 import { authenticate } from "../../shopify.server";
+
+type CampaignsLoaderData = {
+  campaigns: CampaignSummary[];
+  missingDiscountScope: boolean;
+  plan: AppPlan;
+  /** Pre-formatted on the server so SSR and the client agree on the day. */
+  trialEndsLabel: string | null;
+};
+
+const SAVED_MESSAGES: Record<string, string> = {
+  created: "Discount created.",
+  updated: "Discount updated.",
+  deleted: "Discount deleted.",
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
 
   try {
-    const [campaigns, plan] = await Promise.all([
-      loadCampaigns(admin),
-      getCurrentPlan(admin, session.shop),
+    const [campaigns, billing] = await Promise.all([
+      loadAllCampaigns(admin),
+      getBillingSummary(admin, session.shop),
     ]);
 
-    return { campaigns: campaigns.nodes, missingDiscountScope: false, plan };
+    return {
+      campaigns,
+      missingDiscountScope: false,
+      plan: billing.plan,
+      trialEndsLabel: billing.subscription?.trialEndsAt
+        ? formatDate(billing.subscription.trialEndsAt)
+        : null,
+    } satisfies CampaignsLoaderData;
   } catch (error) {
     if (isMissingDiscountScopeError(error)) {
-      return { campaigns: [], missingDiscountScope: true, plan: "free" as AppPlan };
+      return {
+        campaigns: [],
+        missingDiscountScope: true,
+        plan: "free",
+        trialEndsLabel: null,
+      } satisfies CampaignsLoaderData;
     }
 
     throw error;
@@ -62,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (actionType === "delete") {
     try {
       await deleteCampaignById(admin, campaignId);
-      return redirect("/app/campaigns");
+      return redirect("/app/campaigns?saved=deleted");
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : "Could not delete campaign.",
@@ -78,29 +112,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     if (status === "active") {
-      const [campaigns, plan] = await Promise.all([
-        loadCampaigns(admin, { first: 250 }),
-        getCurrentPlan(admin, session.shop),
+      const [campaigns, billing] = await Promise.all([
+        loadAllCampaigns(admin),
+        getBillingSummary(admin, session.shop),
       ]);
-      const entitlements = entitlementForPlan(plan);
-      const targetCampaign = campaigns.nodes.find(
-        (campaign) => campaign.id === campaignId,
-      );
-      const activeCampaignCount = campaigns.nodes.filter(
-        (campaign) => campaign.status.toLowerCase() === "active",
-      ).length;
+      const targetCampaign = campaigns.find((campaign) => campaign.id === campaignId);
 
       if (
-        targetCampaign?.status.toLowerCase() !== "active" &&
-        activeCampaignCount + 1 > entitlements.maxActiveCampaigns
+        targetCampaign?.status !== "active" &&
+        isAtActiveCampaignLimit(billing.plan, countActiveCampaigns(campaigns))
       ) {
-        return {
-          error: `${entitlements.name} includes ${formatCampaignLimit(
-            entitlements.maxActiveCampaigns,
-          )} active discount${
-            entitlements.maxActiveCampaigns === 1 ? "" : "s"
-          }. Upgrade to activate more discounts.`,
-        };
+        return { error: activeCampaignLimitMessage(billing.plan) };
       }
     }
 
@@ -115,12 +137,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function CampaignsIndex() {
-  const { campaigns, missingDiscountScope, plan } = useLoaderData<typeof loader>();
+  const { campaigns, missingDiscountScope, plan, trialEndsLabel } =
+    useLoaderData<typeof loader>() as CampaignsLoaderData;
   const actionData = useActionData<typeof action>();
   const entitlements = entitlementForPlan(plan);
   const location = useLocation();
   const navigate = useNavigate();
   const navigation = useNavigation();
+  const [searchParams] = useSearchParams();
+  const savedMessage = SAVED_MESSAGES[searchParams.get("saved") ?? ""];
   const [campaignPendingDelete, setCampaignPendingDelete] = useState<{
     id: string;
     name: string;
@@ -135,18 +160,12 @@ export default function CampaignsIndex() {
   const isOpeningNewCampaign =
     navigation.state === "loading" &&
     navigation.location?.pathname === "/app/campaigns/new";
-  const activeCampaigns = campaigns.filter(
-    (campaign) => campaign.status.toLowerCase() === "active",
-  );
-  const inactiveCampaigns = campaigns.length - activeCampaigns.length;
-  const productCampaigns = campaigns.filter((campaign) =>
-    campaign.discountType.toLowerCase().includes("product"),
-  ).length;
-  const orderCampaigns = campaigns.filter((campaign) =>
-    campaign.discountType.toLowerCase().includes("order"),
-  ).length;
-  const shippingCampaigns = campaigns.filter((campaign) =>
-    campaign.discountType.toLowerCase().includes("shipping"),
+  const activeCampaignCount = countActiveCampaigns(campaigns);
+  const inactiveCampaigns = campaigns.length - activeCampaignCount;
+  const overLimit = activeCampaignsOverLimit(plan, activeCampaignCount);
+  const atLimit = isAtActiveCampaignLimit(plan, activeCampaignCount);
+  const coverage = campaigns.filter((campaign) =>
+    /product|order|shipping/i.test(campaign.discountType),
   ).length;
 
   useEffect(() => {
@@ -156,10 +175,7 @@ export default function CampaignsIndex() {
   }, [isDeletingCampaign]);
 
   const goToNewCampaign = () => {
-    navigate({
-      pathname: "/app/campaigns/new",
-      search: location.search,
-    });
+    navigate({ pathname: "/app/campaigns/new", search: location.search });
   };
 
   return (
@@ -175,9 +191,15 @@ export default function CampaignsIndex() {
             </p>
           </div>
           <div className={styles.headerActions}>
-            <span className={styles.planPill}>
-              {entitlements.name} · {entitlements.priceLabel}
-            </span>
+            {trialEndsLabel ? (
+              <span className={styles.trialPill}>
+                {entitlements.name} trial · ends {trialEndsLabel}
+              </span>
+            ) : (
+              <span className={styles.planPill}>
+                {entitlements.name} · {entitlements.priceLabel}
+              </span>
+            )}
             <button
               className={styles.headerButton}
               disabled={isOpeningNewCampaign}
@@ -190,15 +212,25 @@ export default function CampaignsIndex() {
         </div>
       </s-section>
 
+      {savedMessage ? (
+        <s-section>
+          <div className={styles.successSection} role="status">
+            {savedMessage}
+          </div>
+        </s-section>
+      ) : null}
+
       <s-section>
         <div className={styles.summaryGrid} aria-label="Discount summary">
           <div className={`${styles.summaryCard} ${styles.summaryCardActive}`}>
             <span className={styles.summaryLabel}>Active</span>
             <strong className={styles.summaryValue}>
-              {activeCampaigns.length} / {formatCampaignLimit(entitlements.maxActiveCampaigns)}
+              {activeCampaignCount} / {formatCampaignLimit(entitlements.maxActiveCampaigns)}
             </strong>
             <span className={styles.summaryText}>
-              {activeCampaigns.length === 1 ? "Discount is running" : "Discounts are running"}
+              {activeCampaignCount === 1
+                ? "Discount is running"
+                : "Discounts are running"}
             </span>
           </div>
           <div className={`${styles.summaryCard} ${styles.summaryCardDraft}`}>
@@ -209,16 +241,37 @@ export default function CampaignsIndex() {
             </span>
           </div>
           <div className={`${styles.summaryCard} ${styles.summaryCardCoverage}`}>
-            <span className={styles.summaryLabel}>Coverage</span>
-            <strong className={styles.summaryValue}>
-              {productCampaigns + orderCampaigns + shippingCampaigns}
-            </strong>
+            <span className={styles.summaryLabel}>Configured</span>
+            <strong className={styles.summaryValue}>{coverage}</strong>
             <span className={styles.summaryText}>
-              Product, order, or shipping rules configured
+              Discounts with product, order, or shipping rules
             </span>
           </div>
         </div>
       </s-section>
+
+      {overLimit > 0 ? (
+        <s-section>
+          <div className={styles.warningSection} role="alert">
+            <h2 className={styles.warningHeading}>
+              {overLimit === 1
+                ? "1 more discount is active than your plan includes"
+                : `${overLimit} more discounts are active than your plan includes`}
+            </h2>
+            <p>
+              {entitlements.name} includes{" "}
+              {formatCampaignLimit(entitlements.maxActiveCampaigns)} active
+              discount{entitlements.maxActiveCampaigns === 1 ? "" : "s"}. Your
+              existing discounts keep running, but you cannot activate more
+              until you deactivate {overLimit === 1 ? "one" : `${overLimit}`} or{" "}
+              <Link to={{ pathname: "/app/plans", search: location.search }}>
+                upgrade your plan
+              </Link>
+              .
+            </p>
+          </div>
+        </s-section>
+      ) : null}
 
       {plan !== "enterprise" ? (
         <s-section>
@@ -234,15 +287,24 @@ export default function CampaignsIndex() {
               </h2>
               <p className={styles.upgradeText}>
                 {plan === "free"
-                  ? "Pro includes fixed amount discounts, BOGO, volume tiers, shipping discounts, market targeting, scheduling, and up to 25 active discounts."
+                  ? `Pro includes fixed amount discounts, BOGO, volume tiers, shipping discounts, market targeting, scheduling, and up to ${formatCampaignLimit(
+                      PLAN_ENTITLEMENTS.pro.maxActiveCampaigns,
+                    )} active discounts. Try it free for ${PAID_PLAN_TRIAL_DAYS} days.`
                   : "Enterprise includes unlimited active discounts, all advanced features, and priority support."}
               </p>
             </div>
             <div className={styles.upgradePrice}>
-              <strong>{plan === "free" ? "$14.90" : "$39.90"}</strong>
+              <strong>
+                {plan === "free"
+                  ? PLAN_ENTITLEMENTS.pro.priceLabel.replace("/month", "")
+                  : PLAN_ENTITLEMENTS.enterprise.priceLabel.replace("/month", "")}
+              </strong>
               <span>/ month</span>
-              <Link className={styles.upgradeLink} to="/app/plans">
-                View plans
+              <Link
+                className={styles.upgradeLink}
+                to={{ pathname: "/app/plans", search: location.search }}
+              >
+                {plan === "free" ? "Start free trial" : "View plans"}
               </Link>
             </div>
           </div>
@@ -254,7 +316,8 @@ export default function CampaignsIndex() {
           <div className={styles.criticalSection}>
             <h3 className={styles.criticalHeading}>Discount access required</h3>
             <p>
-              This app needs permission to read discounts. Reopen or reinstall the app in your dev store to approve the updated permissions.
+              This app needs permission to read discounts. Reopen or reinstall
+              the app to approve the updated permissions.
             </p>
           </div>
         </s-section>
@@ -270,7 +333,8 @@ export default function CampaignsIndex() {
           <div className={styles.emptyState}>
             <h3 className={styles.emptyStateHeading}>No discounts yet</h3>
             <p className={styles.emptyStateText}>
-              Create your first discount to get started. You can set up product and shipping discounts, configure conditions, and schedule discounts.
+              Create your first discount to get started. Set up product, order,
+              or shipping discounts, add conditions, and activate it when ready.
             </p>
             <button
               className={styles.emptyStateButton}
@@ -285,73 +349,88 @@ export default function CampaignsIndex() {
       ) : (
         <s-section>
           <div className={styles.campaignsContainer}>
-            {campaigns.map((campaign) => (
-              <div key={campaign.id} className={styles.campaignCard}>
-                <div className={styles.campaignCardHeader}>
-                  <div className={styles.campaignCardTitle}>
-                    <h3>{campaign.name}</h3>
-                    <p>{campaign.discountType}</p>
-                  </div>
-                  <div className={
-                    campaign.status === "active"
-                      ? `${styles.statusBadge} ${styles.activeBadge}`
-                      : `${styles.statusBadge} ${styles.inactiveBadge}`
-                  }>
-                    {formatStatus(campaign.status)}
-                  </div>
-                </div>
-                <div className={styles.campaignMeta}>
-                  <span>Automatic app discount</span>
-                  <span>Shopify Function</span>
-                </div>
-                <div className={styles.campaignCardActions}>
-                  <Link 
-                    to={{
-                      pathname: `/app/campaigns/${encodeURIComponent(campaign.id)}`,
-                      search: location.search,
-                    }}
-                    className={styles.editButton}
-                  >
-                    Edit
-                  </Link>
-                  <Form method="post" style={{ flex: 1 }}>
-                    <input
-                      name="campaignId"
-                      type="hidden"
-                      value={campaign.id}
-                    />
-                    <input
-                      name="status"
-                      type="hidden"
-                      value={nextStatus(campaign.status)}
-                    />
-                    <button
-                      disabled={submittingCampaignId === campaign.id}
-                      className={styles.toggleButton}
-                      type="submit"
+            {campaigns.map((campaign) => {
+              const isActive = campaign.status === "active";
+              const blockedByLimit = !isActive && atLimit;
+
+              return (
+                <div key={campaign.id} className={styles.campaignCard}>
+                  <div className={styles.campaignCardHeader}>
+                    <div className={styles.campaignCardTitle}>
+                      <h3>{campaign.name}</h3>
+                      <p>{campaign.discountType}</p>
+                    </div>
+                    <div
+                      className={
+                        isActive
+                          ? `${styles.statusBadge} ${styles.activeBadge}`
+                          : `${styles.statusBadge} ${styles.inactiveBadge}`
+                      }
                     >
-                      {submittingCampaignId === campaign.id
-                        ? "Saving..."
-                        : statusActionLabel(campaign.status)}
-                    </button>
-                  </Form>
-                  <div style={{ flex: 1 }}>
-                    <button
-                      className={styles.deleteButton}
-                      type="button"
-                      onClick={() => {
-                        setCampaignPendingDelete({
-                          id: campaign.id,
-                          name: campaign.name,
-                        });
+                      {isActive ? "Active" : "Inactive"}
+                    </div>
+                  </div>
+                  <div className={styles.campaignMeta}>
+                    <span>Automatic app discount</span>
+                    <span>{campaignStatusDetail(campaign)}</span>
+                  </div>
+                  <div className={styles.campaignCardActions}>
+                    <Link
+                      className={styles.editButton}
+                      to={{
+                        pathname: `/app/campaigns/${encodeURIComponent(campaign.id)}`,
+                        search: location.search,
                       }}
                     >
-                      Delete
-                    </button>
+                      Edit
+                    </Link>
+                    {blockedByLimit ? (
+                      <Link
+                        className={styles.limitButton}
+                        title={activeCampaignLimitMessage(plan)}
+                        to={{ pathname: "/app/plans", search: location.search }}
+                      >
+                        Upgrade to activate
+                      </Link>
+                    ) : (
+                      <Form method="post" style={{ flex: 1 }}>
+                        <input name="campaignId" type="hidden" value={campaign.id} />
+                        <input
+                          name="status"
+                          type="hidden"
+                          value={isActive ? "inactive" : "active"}
+                        />
+                        <button
+                          className={styles.toggleButton}
+                          disabled={submittingCampaignId === campaign.id}
+                          type="submit"
+                        >
+                          {submittingCampaignId === campaign.id
+                            ? "Saving..."
+                            : isActive
+                              ? "Deactivate"
+                              : "Activate"}
+                        </button>
+                      </Form>
+                    )}
+                    <div style={{ flex: 1 }}>
+                      <button
+                        className={styles.deleteButton}
+                        onClick={() =>
+                          setCampaignPendingDelete({
+                            id: campaign.id,
+                            name: campaign.name,
+                          })
+                        }
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </s-section>
       )}
@@ -373,12 +452,12 @@ export default function CampaignsIndex() {
                 onClick={() => setCampaignPendingDelete(null)}
                 type="button"
               >
-                x
+                ×
               </button>
             </div>
             <p className={styles.deleteModalText}>
-              This will permanently delete &quot;{campaignPendingDelete.name}&quot;. This
-              action cannot be undone.
+              This will permanently delete &quot;{campaignPendingDelete.name}&quot;.
+              This action cannot be undone.
             </p>
             <div className={styles.deleteModalActions}>
               <button
@@ -390,11 +469,7 @@ export default function CampaignsIndex() {
                 Cancel
               </button>
               <Form method="post">
-                <input
-                  name="campaignId"
-                  type="hidden"
-                  value={campaignPendingDelete.id}
-                />
+                <input name="campaignId" type="hidden" value={campaignPendingDelete.id} />
                 <input name="_action" type="hidden" value="delete" />
                 <button
                   className={styles.deleteButton}
@@ -416,16 +491,30 @@ export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
 
+function campaignStatusDetail(campaign: CampaignSummary) {
+  if (campaign.status === "active") {
+    return "Live at checkout";
+  }
+
+  // Older campaigns were left ACTIVE in Shopify while inactive here; the
+  // function still skips them, and the next status change re-syncs Shopify.
+  if (campaign.shopifyStatus === "ACTIVE") {
+    return "Draft, not applied at checkout";
+  }
+
+  return `${formatStatus(campaign.shopifyStatus)} in Shopify`;
+}
+
 function formatStatus(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
 }
 
-function nextStatus(status: string) {
-  return status.toLowerCase() === "active" ? "inactive" : "active";
-}
-
-function statusActionLabel(status: string) {
-  return status.toLowerCase() === "active" ? "Deactivate" : "Activate";
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function isMissingDiscountScopeError(error: unknown) {

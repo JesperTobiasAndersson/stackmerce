@@ -10,19 +10,15 @@ node_modules
 /public/_dev
 /app/public/build
 /.data
-/prisma/dev.sqlite
-/prisma/dev.sqlite-journal
-database.sqlite
 
 .env
 .env.*
 !.env.example
 !.env.development.example
 !.env.production.example
-database-url.txt
 .cursor/
-.do/
 .gemini/
+.vercel/
 
 
 

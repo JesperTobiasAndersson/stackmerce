@@ -13,14 +13,21 @@ import {
   useSearchParams,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { useState } from "react";
 
-import { getCurrentPlan, isBillingTest } from "../billing.server";
+import {
+  getBillingSummary,
+  isBillingTest,
+  planCacheKey,
+} from "../billing.server";
 import {
   entitlementForPlan,
   formatCampaignLimit,
+  PAID_PLAN_TRIAL_DAYS,
   PLAN_ENTITLEMENTS,
   type AppPlan,
 } from "../entitlements";
+import { loadActiveCampaignCount } from "../campaign-storage.server";
 import { invalidateRuntimeCache } from "../runtime-cache.server";
 import { authenticate, ENTERPRISE_PLAN, PRO_PLAN } from "../shopify.server";
 import styles from "./app.plans/styles.module.css";
@@ -30,6 +37,11 @@ type BillingPlan = Exclude<AppPlan, "free">;
 type PlansLoaderData = {
   currentPlan: AppPlan;
   billingTest: boolean;
+  /** Pre-formatted on the server so SSR and the client agree on the day. */
+  trialEndsLabel: string | null;
+  nextChargeLabel: string | null;
+  activeCampaignCount: number;
+  approved: boolean;
 };
 
 const SHOPIFY_BILLING_PLANS: Record<
@@ -42,11 +54,29 @@ const SHOPIFY_BILLING_PLANS: Record<
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const currentPlan = await getCurrentPlan(admin, session.shop);
+  const url = new URL(request.url);
+  // Shopify appends charge_id when it sends the merchant back from the
+  // subscription approval page; that request must not be served from cache.
+  const approved =
+    url.searchParams.has("charge_id") ||
+    url.searchParams.get("billing") === "approved";
+  const [billing, activeCampaignCount] = await Promise.all([
+    getBillingSummary(admin, session.shop, { fresh: approved }),
+    loadActiveCampaignCount(admin),
+  ]);
 
   return {
-    currentPlan,
+    currentPlan: billing.plan,
     billingTest: isBillingTest(),
+    trialEndsLabel: billing.subscription?.trialEndsAt
+      ? formatDate(billing.subscription.trialEndsAt)
+      : null,
+    nextChargeLabel:
+      billing.subscription?.currentPeriodEnd && !billing.subscription.trialEndsAt
+        ? formatDate(billing.subscription.currentPeriodEnd)
+        : null,
+    activeCampaignCount,
+    approved,
   } satisfies PlansLoaderData;
 };
 
@@ -54,7 +84,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, billing, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const requestedPlan = String(formData.get("plan") || "") as AppPlan;
-  const currentPlan = await getCurrentPlan(admin, session.shop);
+  const { plan: currentPlan } = await getBillingSummary(admin, session.shop);
   const billingTest = isBillingTest();
 
   if (!isSelectablePlan(requestedPlan)) {
@@ -89,7 +119,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         prorate: true,
       });
 
-      invalidateRuntimeCache(`plan:${session.shop}`);
+      invalidateRuntimeCache(planCacheKey(session.shop));
     } catch (error) {
       return { error: billingErrorMessage(error) };
     }
@@ -98,10 +128,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    invalidateRuntimeCache(`plan:${session.shop}`);
+    invalidateRuntimeCache(planCacheKey(session.shop));
     await billing.request({
       plan: SHOPIFY_BILLING_PLANS[requestedPlan],
       isTest: billingTest,
+      // Bring the merchant back to this page (inside Shopify Admin) instead of
+      // the app root so they see the confirmation and their new plan.
+      returnUrl: embeddedPlansUrl(session.shop),
     });
   } catch (error) {
     if (error instanceof Response) {
@@ -113,15 +146,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Plans() {
-  const { currentPlan, billingTest } = useLoaderData<typeof loader>();
+  const {
+    currentPlan,
+    billingTest,
+    trialEndsLabel,
+    nextChargeLabel,
+    activeCampaignCount,
+    approved,
+  } = useLoaderData<typeof loader>() as PlansLoaderData;
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const [searchParams] = useSearchParams();
+  const [confirmDowngrade, setConfirmDowngrade] = useState(false);
   const billingStatus = searchParams.get("billing");
   const submittingPlan =
     navigation.state === "submitting"
       ? String(navigation.formData?.get("plan") || "")
       : "";
+  const current = entitlementForPlan(currentPlan);
+  const campaignsToDeactivate = Math.max(
+    0,
+    activeCampaignCount - PLAN_ENTITLEMENTS.free.maxActiveCampaigns,
+  );
 
   return (
     <s-page heading="Plans">
@@ -132,12 +178,22 @@ export default function Plans() {
             <h1 className={styles.title}>Choose the right plan</h1>
             <p className={styles.description}>
               Free keeps the basics available. Pro and Enterprise unlock the
-              advanced discount types and targeting controls.
+              advanced discount types and targeting controls, and both start
+              with a {PAID_PLAN_TRIAL_DAYS}-day free trial.
             </p>
           </div>
           <div className={styles.currentPlan}>
             <span>Current plan</span>
-            <strong>{entitlementForPlan(currentPlan).name}</strong>
+            <strong>{current.name}</strong>
+            {trialEndsLabel ? (
+              <span className={styles.currentPlanMeta}>
+                Free trial ends {trialEndsLabel}
+              </span>
+            ) : nextChargeLabel ? (
+              <span className={styles.currentPlanMeta}>
+                Next charge {nextChargeLabel}
+              </span>
+            ) : null}
           </div>
         </div>
       </s-section>
@@ -152,19 +208,28 @@ export default function Plans() {
         </s-section>
       ) : null}
 
-      {billingStatus === "approved" ? (
+      {approved ? (
         <s-section>
-          <div className={styles.success}>Plan approval completed.</div>
+          <div className={styles.success} role="status">
+            You are now on {current.name}.{" "}
+            {trialEndsLabel
+              ? `Your free trial runs until ${trialEndsLabel}; you will not be charged before then.`
+              : "All plan features are unlocked."}
+          </div>
         </s-section>
       ) : billingStatus === "cancelled" ? (
         <s-section>
-          <div className={styles.success}>Subscription cancelled.</div>
+          <div className={styles.success} role="status">
+            Subscription cancelled. You are back on the Free plan.
+          </div>
         </s-section>
       ) : null}
 
       {actionData?.error ? (
         <s-section>
-          <div className={styles.error}>{actionData.error}</div>
+          <div className={styles.error} role="alert">
+            {actionData.error}
+          </div>
         </s-section>
       ) : null}
 
@@ -174,6 +239,8 @@ export default function Plans() {
             const entitlements = PLAN_ENTITLEMENTS[plan];
             const isCurrentPlan = currentPlan === plan;
             const isSubmitting = submittingPlan === plan;
+            const isPaid = plan !== "free";
+            const isDowngrade = plan === "free";
 
             return (
               <article
@@ -194,10 +261,21 @@ export default function Plans() {
                   ) : null}
                 </div>
 
+                {isPaid && !isCurrentPlan && currentPlan === "free" ? (
+                  <span className={styles.trialBadge}>
+                    {PAID_PLAN_TRIAL_DAYS}-day free trial
+                  </span>
+                ) : null}
+
                 <div className={styles.price}>
                   <strong>{entitlements.priceLabel.replace("/month", "")}</strong>
                   <span>/ month</span>
                 </div>
+                {isPaid ? (
+                  <p className={styles.priceNote}>
+                    Billed every 30 days through Shopify. Cancel any time.
+                  </p>
+                ) : null}
 
                 <ul className={styles.featureList}>
                   {planFeatures(plan).map((feature) => (
@@ -205,31 +283,96 @@ export default function Plans() {
                   ))}
                 </ul>
 
-                <Form method="post">
-                  <input name="plan" type="hidden" value={plan} />
+                {isDowngrade && !isCurrentPlan ? (
                   <button
-                    className={
-                      isCurrentPlan
-                        ? styles.secondaryButton
-                        : styles.primaryButton
-                    }
-                    disabled={isCurrentPlan || Boolean(submittingPlan)}
-                    type="submit"
+                    className={styles.secondaryButton}
+                    disabled={Boolean(submittingPlan)}
+                    onClick={() => setConfirmDowngrade(true)}
+                    type="button"
                   >
-                    {isCurrentPlan
-                      ? "Current plan"
-                      : isSubmitting
-                        ? "Opening Shopify..."
-                        : plan === "free"
-                          ? "Downgrade to Free"
-                          : `Upgrade to ${entitlements.name}`}
+                    {isSubmitting ? "Cancelling..." : "Downgrade to Free"}
                   </button>
-                </Form>
+                ) : (
+                  <Form method="post">
+                    <input name="plan" type="hidden" value={plan} />
+                    <button
+                      className={
+                        isCurrentPlan
+                          ? styles.secondaryButton
+                          : styles.primaryButton
+                      }
+                      disabled={isCurrentPlan || Boolean(submittingPlan)}
+                      type="submit"
+                    >
+                      {isCurrentPlan
+                        ? "Current plan"
+                        : isSubmitting
+                          ? "Opening Shopify..."
+                          : currentPlan === "free"
+                            ? `Start ${PAID_PLAN_TRIAL_DAYS}-day free trial`
+                            : plan === "enterprise"
+                              ? "Upgrade to Enterprise"
+                              : "Switch to Pro"}
+                    </button>
+                  </Form>
+                )}
               </article>
             );
           })}
         </div>
       </s-section>
+
+      {confirmDowngrade ? (
+        <div
+          aria-labelledby="downgrade-title"
+          aria-modal="true"
+          className={styles.modalBackdrop}
+          role="dialog"
+        >
+          <div className={styles.modal}>
+            <h2 id="downgrade-title">Downgrade to Free?</h2>
+            <p>
+              Your {current.name} subscription is cancelled immediately and any
+              unused time is credited by Shopify. On Free:
+            </p>
+            <ul>
+              <li>
+                Only {PLAN_ENTITLEMENTS.free.maxActiveCampaigns} discount can be
+                active
+                {campaignsToDeactivate > 0
+                  ? ` (you currently have ${activeCampaignCount} active; you will need to deactivate ${campaignsToDeactivate})`
+                  : ""}
+                .
+              </li>
+              <li>
+                Discounts using fixed amounts, BOGO, volume tiers, shipping
+                discounts, market targeting, or scheduling keep running but
+                cannot be edited until those settings are removed.
+              </li>
+            </ul>
+            <div className={styles.modalActions}>
+              <button
+                className={styles.secondaryButton}
+                disabled={Boolean(submittingPlan)}
+                onClick={() => setConfirmDowngrade(false)}
+                type="button"
+              >
+                Keep {current.name}
+              </button>
+              <Form method="post">
+                <input name="plan" type="hidden" value="free" />
+                <button
+                  className={styles.dangerButton}
+                  disabled={Boolean(submittingPlan)}
+                  type="submit"
+                >
+                  {submittingPlan === "free" ? "Cancelling..." : "Downgrade to Free"}
+                </button>
+              </Form>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </s-page>
   );
 }
@@ -248,14 +391,24 @@ function subscriptionForPlan(
   subscriptions: BillingSubscription[],
   currentPlan: AppPlan,
 ) {
-  const targetName =
-    currentPlan === "enterprise" ? ENTERPRISE_PLAN : PRO_PLAN;
+  const targetName = currentPlan === "enterprise" ? ENTERPRISE_PLAN : PRO_PLAN;
 
   return subscriptions.find(
     (subscription) =>
       subscription.status === "ACTIVE" &&
       subscription.name.toLowerCase() === targetName.toLowerCase(),
   );
+}
+
+/**
+ * The Plans page as seen inside Shopify Admin. Shopify appends `charge_id`
+ * when it redirects back after the merchant approves the subscription.
+ */
+function embeddedPlansUrl(shop: string) {
+  const store = shop.replace(".myshopify.com", "");
+  const apiKey = process.env.SHOPIFY_API_KEY || "";
+
+  return `https://admin.shopify.com/store/${store}/apps/${apiKey}/app/plans?billing=approved`;
 }
 
 function billingErrorMessage(error: unknown) {
@@ -282,6 +435,15 @@ function hasErrorData(error: unknown): error is { errorData: unknown } {
   return Boolean(error && typeof error === "object" && "errorData" in error);
 }
 
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 const planDescriptions: Record<AppPlan, string> = {
   free: "For one simple automatic discount.",
   pro: "For stores that need advanced discount campaigns.",
@@ -296,8 +458,8 @@ function planFeatures(plan: AppPlan) {
     return [
       `${campaignLimit} active discount`,
       "Percentage product and order discounts",
-      "Basic product and collection restrictions",
-      "Community support",
+      "Product and collection include/exclude rules",
+      "Minimum subtotal and quantity conditions",
     ];
   }
 
@@ -306,8 +468,8 @@ function planFeatures(plan: AppPlan) {
       `${campaignLimit} active discounts`,
       "Fixed amount discounts",
       "BOGO and volume tier discounts",
-      "Shipping discounts and market targeting",
-      "Scheduling",
+      "Shipping discounts and shipping method targeting",
+      "Market targeting and scheduling",
     ];
   }
 

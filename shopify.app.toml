@@ -2,7 +2,10 @@
 
 client_id = "2bf6876a2bbf4381c85973f61ddfa5cb"
 name = "Discount"
-application_url = "https://discount-app-437971048935.europe-north1.run.app"
+# TODO: replace with the production Vercel domain after the first deploy
+# (e.g. https://discount-app.vercel.app or a custom domain), then run
+# `shopify app deploy` so Shopify picks up the new URLs.
+application_url = "https://YOUR-VERCEL-DOMAIN.vercel.app"
 embedded = true
 
 [build]
@@ -26,31 +29,10 @@ api_version = "2026-07"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_discounts,write_discounts,write_products,read_shipping,read_markets,write_metaobjects,write_metaobject_definitions"
+# read_discounts/write_discounts: manage automatic app discounts.
+# read_shipping: list shipping methods for shipping-method targeting.
+# read_markets: list markets for market targeting.
+scopes = "read_discounts,write_discounts,read_shipping,read_markets"
 
 [auth]
-redirect_urls = [ "https://discount-app-437971048935.europe-north1.run.app/auth/callback" ]
-
-[product.metafields.app.demo_info]
-type = "single_line_text_field"
-name = "Demo Source Info"
-description = "Tracks products created by the Shopify app template for development"
-
-  [product.metafields.app.demo_info.access]
-  admin = "merchant_read_write"
-
-[metaobjects.app.example]
-name = "Example"
-description = "An example metaobject definition created by this template"
-
-  [metaobjects.app.example.access]
-  admin = "merchant_read_write"
-
-[metaobjects.app.example.fields.title]
-name = "Title"
-type = "single_line_text_field"
-required = true
-
-[metaobjects.app.example.fields.description]
-name = "Description"
-type = "multi_line_text_field"
+redirect_urls = [ "https://YOUR-VERCEL-DOMAIN.vercel.app/auth/callback" ]

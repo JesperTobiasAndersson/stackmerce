@@ -1,5 +1,5 @@
 import type { AppPlan } from "./entitlements";
-import { withRuntimeCache } from "./runtime-cache.server";
+import { invalidateRuntimeCache, withRuntimeCache } from "./runtime-cache.server";
 
 interface ShopifyAdminClient {
   graphql: (
@@ -9,8 +9,13 @@ interface ShopifyAdminClient {
 }
 
 interface ActiveSubscription {
+  id?: string;
   name?: string;
   status?: string;
+  test?: boolean;
+  trialDays?: number;
+  createdAt?: string;
+  currentPeriodEnd?: string | null;
   lineItems?: Array<{
     plan?: {
       pricingDetails?: {
@@ -32,12 +37,30 @@ interface BillingQueryResponse {
   };
 }
 
+export interface BillingSummary {
+  plan: AppPlan;
+  subscription: {
+    id: string;
+    name: string;
+    isTest: boolean;
+    /** ISO date the free trial ends, or null when there is no trial running. */
+    trialEndsAt: string | null;
+    /** ISO date of the next charge (end of the current billing period). */
+    currentPeriodEnd: string | null;
+  } | null;
+}
+
 const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
   query ActiveAppSubscriptions {
     currentAppInstallation {
       activeSubscriptions {
+        id
         name
         status
+        test
+        trialDays
+        createdAt
+        currentPeriodEnd
         lineItems {
           plan {
             pricingDetails {
@@ -58,34 +81,59 @@ const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
 
 const PLAN_CACHE_TTL_MS = 60_000;
 
-export async function getCurrentPlan(
+const FREE_SUMMARY: BillingSummary = { plan: "free", subscription: null };
+
+export interface BillingLookupOptions {
+  /**
+   * Skip the cached plan and ask Shopify again. Use on the request that
+   * returns from Shopify's subscription approval page, otherwise the merchant
+   * can land on a page that still shows the old plan for up to a minute.
+   */
+  fresh?: boolean;
+}
+
+export async function getBillingSummary(
   admin: ShopifyAdminClient,
   shop: string | null = null,
-): Promise<AppPlan> {
+  { fresh = false }: BillingLookupOptions = {},
+): Promise<BillingSummary> {
   const overridePlan = planOverride();
   if (overridePlan) {
-    return overridePlan;
+    return { plan: overridePlan, subscription: null };
+  }
+
+  const cacheKey = shop ? planCacheKey(shop) : null;
+  if (fresh && cacheKey) {
+    invalidateRuntimeCache(cacheKey);
   }
 
   try {
-    return await withRuntimeCache(
-      shop ? `plan:${shop}` : null,
-      PLAN_CACHE_TTL_MS,
-      async () => {
-        const response = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
-        const json = (await response.json()) as BillingQueryResponse;
-        const activeSubscription =
-          json.data?.currentAppInstallation?.activeSubscriptions?.find(
-            (subscription) =>
-              !subscription.status || subscription.status === "ACTIVE",
-          );
+    return await withRuntimeCache(cacheKey, PLAN_CACHE_TTL_MS, async () => {
+      const response = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
+      const json = (await response.json()) as BillingQueryResponse;
+      const activeSubscription =
+        json.data?.currentAppInstallation?.activeSubscriptions?.find(
+          (subscription) =>
+            !subscription.status || subscription.status === "ACTIVE",
+        );
 
-        return planFromSubscription(activeSubscription);
-      },
-    );
+      return summaryFromSubscription(activeSubscription);
+    });
   } catch {
-    return "free";
+    return FREE_SUMMARY;
   }
+}
+
+export async function getCurrentPlan(
+  admin: ShopifyAdminClient,
+  shop: string | null = null,
+  options: BillingLookupOptions = {},
+): Promise<AppPlan> {
+  return (await getBillingSummary(admin, shop, options)).plan;
+}
+
+export function planCacheKey(shop: string) {
+  return `plan:${shop}`;
 }
 
 export function isBillingTest() {
@@ -94,6 +142,40 @@ export function isBillingTest() {
   }
 
   return process.env.NODE_ENV !== "production";
+}
+
+function summaryFromSubscription(
+  subscription?: ActiveSubscription,
+): BillingSummary {
+  const plan = planFromSubscription(subscription);
+
+  if (!subscription || plan === "free") {
+    return FREE_SUMMARY;
+  }
+
+  return {
+    plan,
+    subscription: {
+      id: subscription.id ?? "",
+      name: subscription.name ?? "",
+      isTest: Boolean(subscription.test),
+      trialEndsAt: trialEndsAt(subscription),
+      currentPeriodEnd: subscription.currentPeriodEnd ?? null,
+    },
+  };
+}
+
+function trialEndsAt(subscription: ActiveSubscription) {
+  const trialDays = Number(subscription.trialDays ?? 0);
+  const createdAt = Date.parse(subscription.createdAt ?? "");
+
+  if (!trialDays || Number.isNaN(createdAt)) {
+    return null;
+  }
+
+  const endsAt = createdAt + trialDays * 24 * 60 * 60 * 1000;
+
+  return endsAt > Date.now() ? new Date(endsAt).toISOString() : null;
 }
 
 function planFromSubscription(subscription?: ActiveSubscription): AppPlan {

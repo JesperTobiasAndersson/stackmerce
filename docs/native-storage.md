@@ -69,14 +69,12 @@ Campaigns are not stored in the app runtime at all.
 The remaining app-owned persistence is Shopify session storage.
 
 - Local development uses a small file-backed session store.
-- Production on Google Cloud uses Firestore.
+- Production on Vercel uses Neon Postgres through the HTTP driver
+  (`app/neon-session-storage.server.ts`). The whole session is stored as JSONB
+  in one `shopify_sessions` table, so new session fields never need a schema
+  change. The table is created by `npm run db:migrate`.
 
-No custom campaign tables are required for the MVP.
-
-For cost optimization, this removes the need for a managed PostgreSQL database.
-On Google Cloud, Firestore is a better fit than Cloud SQL for this app because
-it stays compatible with Cloud Run scale-to-zero and charges mostly per actual
-session reads and writes.
+No custom campaign tables are required for the MVP, and no ORM is used.
 
 ## Read/write paths
 

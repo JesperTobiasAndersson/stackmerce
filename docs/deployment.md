@@ -1,44 +1,24 @@
 # Deployment and Environments
 
-This app should run with separate development and production environments. Do not reuse the same Shopify app, database, or billing settings across both.
+The admin app runs on Vercel. Shopify sessions live in Neon Postgres. Campaign
+data lives in Shopify metafields, so there is nothing else to host.
 
 ## Environments
 
 | Area | Development | Production |
 | --- | --- | --- |
-| Shopify app | Development/public test app | Production public app |
+| Shopify app config | `shopify.app.development.toml` | `shopify.app.toml` |
 | Billing | Test billing | Real billing |
-| Session storage | Local file | Firestore |
-| App URL | Shopify CLI tunnel | Stable hosted URL |
+| Session storage | Local JSON file | Neon Postgres |
+| App URL | Shopify CLI tunnel | Vercel production domain |
 | Plan override | Allowed | Never set |
-
-## Recommended Production Target
-
-For the current codebase, the cheapest safe production target is:
-
-- Hosting: a scale-to-zero container host from the repo `Dockerfile`
-- Persistence: Firestore for Shopify sessions
-- Secrets: platform-managed secrets
-
-For Google Cloud production, use `Cloud Run + Firestore`, not `Cloud Run + Cloud SQL`. The discount logic already runs inside Shopify Functions, so your app server mostly exists for embedded admin pages, auth, billing, and webhooks.
-
-## Lowest-Cost Architecture Direction
-
-If your goal is near-zero driftkostnad, optimize in this order:
-
-1. Keep campaign data in Shopify-native storage. This app already does that.
-2. Use Firestore instead of a managed SQL database for session storage.
-3. Run the admin app on a platform that truly scales to zero.
-
-Today the remaining non-Shopify infrastructure cost is driven by session persistence, not by campaign storage.
 
 ## Environment Variables
 
-Use the example files as references:
+Reference files:
 
 - `.env.development.example`
 - `.env.production.example`
-- `.env.cloudrun.example`
 
 Development:
 
@@ -50,40 +30,60 @@ SESSION_STORAGE_BACKEND=file
 SESSION_STORAGE_FILE=.data/shopify-sessions.json
 ```
 
-Production:
+Production (Vercel project settings):
 
 ```shell
+SHOPIFY_API_KEY=...
+SHOPIFY_API_SECRET=...
+SHOPIFY_APP_URL=https://<your-vercel-domain>
+SCOPES=read_discounts,write_discounts,read_shipping,read_markets
 SHOPIFY_BILLING_TEST=false
-NODE_ENV=production
-SESSION_STORAGE_BACKEND=firestore
-FIRESTORE_SESSION_COLLECTION=shopify_sessions
+SESSION_STORAGE_BACKEND=neon
+DATABASE_URL=<set by the Neon integration>
 ```
 
-Do not set `APP_PLAN_OVERRIDE` in production. The app also ignores it when `NODE_ENV=production`, but keeping it unset avoids confusion.
+`NODE_ENV=production` is set by Vercel. Do not set `APP_PLAN_OVERRIDE` in
+production; the app ignores it there anyway.
 
-## Shopify App Configs
+## First-time Vercel setup
 
-Current working config:
+1. Create a Neon database. The easiest path is the Neon integration in the
+   Vercel Marketplace, which creates the database and injects `DATABASE_URL`
+   into the project. Pick the Neon region closest to the Vercel function
+   region. `vercel.json` pins functions to `arn1` (Stockholm) to match the
+   previous europe-north1 deployment; change both together if your merchants
+   are elsewhere.
+2. Import the repository into Vercel. The `@vercel/react-router` preset in
+   `react-router.config.ts` is picked up automatically; the build command is
+   `npm run build`.
+3. Add the Shopify environment variables listed above.
+4. Run the session table migration once against the production database:
 
-- `shopify.app.toml`
+   ```shell
+   vercel env pull .env.vercel.local
+   DATABASE_URL=$(grep DATABASE_URL .env.vercel.local | cut -d= -f2-) npm run db:migrate
+   ```
 
-Development reference:
+   Migrations are idempotent, so re-running them is safe.
+5. Deploy. Copy the production domain Vercel assigns (or attach a custom
+   domain).
+6. Put that domain in `shopify.app.toml` (`application_url` and
+   `redirect_urls`) and in the `SHOPIFY_APP_URL` env var, then:
 
-- `shopify.app.development.toml`
+   ```shell
+   shopify app config validate
+   shopify app deploy
+   ```
 
-Production template:
+   `shopify app deploy` also publishes the discount function extension and
+   registers the webhooks.
 
-- `shopify.app.production.example.toml`
+## Preview deployments
 
-For production, create a separate public app in Shopify Partners, copy the production example, replace the `client_id`, `application_url`, and `redirect_urls`, then link it with Shopify CLI.
-
-```shell
-shopify app config link
-shopify app config use
-shopify app config validate
-```
-
-Use `shopify app config use` to switch between dev and production configs before deploying. Always check the selected config before running deploy.
+Vercel preview URLs change per branch. Shopify only accepts requests from the
+URLs in the app config, so previews cannot be opened inside Shopify Admin
+without updating the config. Use `npm run dev` with a dev store for feature
+work and treat previews as build checks only.
 
 ## Development Workflow
 
@@ -91,107 +91,29 @@ Use `shopify app config use` to switch between dev and production configs before
 npm run dev
 ```
 
-The Shopify CLI updates tunnel URLs for dev when `automatically_update_urls_on_dev = true`.
+The Shopify CLI updates tunnel URLs for dev when
+`automatically_update_urls_on_dev = true` in `shopify.app.development.toml`.
 
-Use `APP_PLAN_OVERRIDE` only for local UI testing. Remove it when testing real Shopify billing state.
-
-The default runtime persistence target is:
-
-- development: local JSON session file
-- production: Firestore
-
-## Cloud Run Setup
-
-Use this only if you prefer the most familiar path over the cheapest one.
-
-1. Create or select a GCP project.
-2. Enable these APIs:
-   - Cloud Run Admin API
-   - Cloud Build API
-   - Artifact Registry API
-   - Secret Manager API
-3. Create an Artifact Registry Docker repository.
-4. Create a Firestore database in the same GCP project.
-5. Store these values in Secret Manager:
-   - `shopify-api-key`
-   - `shopify-api-secret`
-6. Set the production app URL in Shopify to the final Cloud Run URL or your custom domain.
-
-### Firestore
-
-Cloud Run can use Firestore through Application Default Credentials from its service account. No database connection string is required.
-
-Use a dedicated collection such as `shopify_sessions`.
-
-### Build and Deploy
-
-The repo includes `cloudbuild.yaml` for a simple container build and Cloud Run deployment.
-For a scripted GCP setup flow, use `scripts/gcp-production.ps1` and the
-runbook in `docs/gcp-production-runbook.md`.
-
-Run from the repo root:
-
-```shell
-gcloud builds submit --config cloudbuild.yaml
-```
-
-The default substitutions in `cloudbuild.yaml` should be edited before first production deploy:
-
-- `_SERVICE_NAME`
-- `_REGION`
-- `_SERVICE_ACCOUNT`
-- `_CONCURRENCY`
-- `_CPU`
-- `_MEMORY`
-- `_TIMEOUT`
-- `_MAX_INSTANCES`
-- `_IMAGE_URI`
-- `_SHOPIFY_APP_URL`
-- `_FIRESTORE_SESSION_COLLECTION`
-- `_SCOPES`
-- secret names if they differ from the defaults
-
-The provided `cloudbuild.yaml` keeps `min-instances=0` and sets a small
-`max-instances` cap for cost control. Adjust `_MAX_INSTANCES` only if traffic
-or webhook concurrency requires it.
-
-Recommended low-cost defaults in this repo:
-
-- `--cpu-throttling`: request-based billing
-- `--no-cpu-boost`: lower startup spend, slower cold starts
-- `_CPU=0.5`
-- `_MEMORY=512Mi`
-- `_CONCURRENCY=1`
-- `_TIMEOUT=60s`
-- `_MAX_INSTANCES=3`
+Use `APP_PLAN_OVERRIDE` only for local UI testing. Remove it when testing
+real Shopify billing state.
 
 ## Production Checklist
 
-1. Create or select the production public app in Shopify Partners.
-2. Set the production app URL to the Cloud Run URL or custom domain.
-3. Set redirect URLs for the production domain.
-4. Configure production environment variables and secrets in Cloud Run.
-5. Set `SHOPIFY_BILLING_TEST=false`.
-6. Ensure `APP_PLAN_OVERRIDE` is not set.
-7. Ensure the Cloud Run service account can access Firestore.
-   Recommended: grant `roles/datastore.user` on the project.
-8. Use a dedicated Cloud Run service account instead of the default compute account.
-9. Deploy the app container to your chosen host.
-10. Validate and deploy Shopify config:
-
-```shell
-shopify app config validate
-shopify app deploy
-```
+1. Neon database created and `DATABASE_URL` present in Vercel.
+2. `npm run db:migrate` run against production.
+3. `SHOPIFY_BILLING_TEST=false`, `APP_PLAN_OVERRIDE` unset.
+4. `shopify.app.toml` URLs match the Vercel domain.
+5. `shopify app deploy` run after the Vercel deploy.
 
 ## Verification
 
 Before submitting to the Shopify App Store:
 
 - Install the production app on a test store.
-- Confirm Free plan limitations.
-- Approve Pro billing and confirm paid features unlock.
+- Confirm Free plan limitations and the upgrade prompts.
+- Start a Pro trial, confirm paid features unlock and the trial badge shows.
 - Approve Enterprise billing and confirm unlimited active discounts.
-- Cancel or downgrade and confirm Free limitations return.
-- Create, edit, activate, deactivate, and delete discounts.
+- Downgrade to Free and confirm the over-limit banner and Free limitations.
+- Create, edit, activate, deactivate, and delete discounts; confirm the
+  status in Shopify Admin > Discounts matches the app.
 - Confirm webhooks are registered after deploy.
