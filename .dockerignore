@@ -1,0 +1,13 @@
+node_modules
+build
+.data
+.env
+.env.*
+.git
+.vercel
+.shopify
+.react-router
+extensions/*/dist
+extensions/*/node_modules
+docs
+*.md

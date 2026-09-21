@@ -69,7 +69,7 @@ Campaigns are not stored in the app runtime at all.
 The remaining app-owned persistence is Shopify session storage.
 
 - Local development uses a small file-backed session store.
-- Production on Vercel uses Neon Postgres through the HTTP driver
+- Production on Cloud Run uses Neon Postgres through the HTTP driver
   (`app/neon-session-storage.server.ts`). The whole session is stored as JSONB
   in one `shopify_sessions` table, so new session fields never need a schema
   change. The table is created by `npm run db:migrate`.

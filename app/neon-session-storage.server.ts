@@ -23,7 +23,7 @@ const TABLE_NAME_PATTERN = /^[a-z_][a-z0-9_]*$/;
  * Shopify session storage backed by Neon Postgres over the HTTP driver.
  *
  * The HTTP driver opens no persistent connections, which is what we want on
- * Vercel: every request may land on a fresh function instance and a pooled
+ * Cloud Run: instances scale to zero and back, and a pooled
  * TCP client would leak connections between instances.
  *
  * The full session is stored as JSONB so new session fields (refresh tokens,
@@ -130,7 +130,7 @@ export function databaseUrl() {
 
   if (!url) {
     throw new Error(
-      "DATABASE_URL is not set. Connect the Neon integration in Vercel or set the Neon connection string.",
+      "DATABASE_URL is not set. Set it from the Neon console (Secret Manager in production).",
     );
   }
 

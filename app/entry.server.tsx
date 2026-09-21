@@ -1,26 +1,51 @@
-import type { AppLoadContext, EntryContext } from "react-router";
-import { handleRequest as vercelHandleRequest } from "@vercel/react-router/entry.server";
+import { PassThrough } from "node:stream";
+import { renderToPipeableStream } from "react-dom/server";
+import { ServerRouter, type EntryContext } from "react-router";
+import { createReadableStreamFromReadable } from "@react-router/node";
+import { isbot } from "isbot";
+
 import { addDocumentResponseHeaders } from "./shopify.server";
 
-export { streamTimeout } from "@vercel/react-router/entry.server";
+export const streamTimeout = 5000;
 
-// Vercel's entry picks the right streaming renderer for the runtime and
-// handles bot/shell-ready timing. We only need to add Shopify's embedded-app
-// headers (CSP frame-ancestors etc.) before handing the request over.
-export default function handleRequest(
+export default async function handleRequest(
   request: Request,
   responseStatusCode: number,
   responseHeaders: Headers,
   reactRouterContext: EntryContext,
-  loadContext?: AppLoadContext,
 ) {
   addDocumentResponseHeaders(request, responseHeaders);
+  const userAgent = request.headers.get("user-agent");
+  const callbackName = isbot(userAgent ?? "") ? "onAllReady" : "onShellReady";
 
-  return vercelHandleRequest(
-    request,
-    responseStatusCode,
-    responseHeaders,
-    reactRouterContext,
-    loadContext,
-  );
+  return new Promise((resolve, reject) => {
+    const { pipe, abort } = renderToPipeableStream(
+      <ServerRouter context={reactRouterContext} url={request.url} />,
+      {
+        [callbackName]: () => {
+          const body = new PassThrough();
+          const stream = createReadableStreamFromReadable(body);
+
+          responseHeaders.set("Content-Type", "text/html");
+          resolve(
+            new Response(stream, {
+              headers: responseHeaders,
+              status: responseStatusCode,
+            }),
+          );
+          pipe(body);
+        },
+        onShellError(error) {
+          reject(error);
+        },
+        onError(error) {
+          responseStatusCode = 500;
+          console.error(error);
+        },
+      },
+    );
+
+    // Abort the render after the stream timeout so rejected boundaries flush.
+    setTimeout(abort, streamTimeout + 1000);
+  });
 }

@@ -1,89 +1,94 @@
 # Deployment and Environments
 
-The admin app runs on Vercel. Shopify sessions live in Neon Postgres. Campaign
-data lives in Shopify metafields, so there is nothing else to host.
+The admin app runs on Google Cloud Run (project `discount-494316`, region
+`europe-west3`). Shopify sessions live in Neon Postgres (`eu-central-1`, next
+to the Cloud Run region). Campaign data lives in Shopify metafields, so there
+is nothing else to host.
 
 ## Environments
 
 | Area | Development | Production |
 | --- | --- | --- |
 | Shopify app config | `shopify.app.development.toml` | `shopify.app.toml` |
-| Billing | Test billing | Real billing |
+| Billing | Test charges | Real charges (test charges on dev stores) |
 | Session storage | Local JSON file | Neon Postgres |
-| App URL | Shopify CLI tunnel | Vercel production domain |
+| App URL | Shopify CLI tunnel | `https://discount-app-437971048935.europe-west3.run.app` |
 | Plan override | Allowed | Never set |
 
-## Environment Variables
+## Cost profile
 
-Reference files:
+The service is configured for the smallest possible bill without slow loads:
 
-- `.env.development.example`
-- `.env.production.example`
+- `min-instances=0`: nothing runs, nothing is billed, while the app is idle.
+- Request-based billing (CPU only allocated while a request is in flight).
+- `concurrency=80`: one instance serves many merchants; instances are rarely
+  added. `max-instances=3` caps the worst case.
+- `cpu=1`, `memory=512Mi`: the smallest size that keeps Node responsive.
+- `--cpu-boost`: extra CPU only during startup, billed for that second or so;
+  it roughly halves cold starts (~0.5 s measured), which matters for Shopify's
+  Core Web Vitals check.
+- Artifact Registry keeps the three newest images and deletes the rest.
+- Neon free tier auto-suspends after 5 minutes idle; the first query after
+  that adds ~0.3–0.5 s. Move to Neon Launch if that shows up in the vitals.
 
-Development:
+At a few thousand admin page views a month this sits inside Google's free tier.
 
-```shell
-SHOPIFY_BILLING_TEST=true
-NODE_ENV=development
-APP_PLAN_OVERRIDE=free
-SESSION_STORAGE_BACKEND=file
-SESSION_STORAGE_FILE=.data/shopify-sessions.json
+## Secrets and settings
+
+Secrets (Secret Manager, read by the runtime service account
+`discount-app-run@discount-494316.iam.gserviceaccount.com`):
+
+| Secret | Value |
+| --- | --- |
+| `shopify-api-key` | Client ID from the Partner Dashboard |
+| `shopify-api-secret` | Client secret from the Partner Dashboard |
+| `database-url` | Neon connection string (pooled) |
+
+Non-secret settings are substitutions in `cloudbuild.yaml`:
+`_SHOPIFY_APP_URL`, `_SCOPES`, `_REGION`, `_MAX_INSTANCES`. The deploy step
+sets `NODE_ENV=production`, `SESSION_STORAGE_BACKEND=neon`,
+`SHOPIFY_BILLING_TEST=false`.
+
+To rotate a secret:
+
+```powershell
+gcloud secrets versions add shopify-api-secret --data-file=secret.txt
+npm run deploy:cloudrun   # new revision picks up :latest
 ```
 
-Production (Vercel project settings):
+## Deploying
 
 ```shell
-SHOPIFY_API_KEY=...
-SHOPIFY_API_SECRET=...
-SHOPIFY_APP_URL=https://<your-vercel-domain>
-SCOPES=read_discounts,write_discounts,read_shipping,read_markets
-SHOPIFY_BILLING_TEST=false
-SESSION_STORAGE_BACKEND=neon
-DATABASE_URL=<set by the Neon integration>
+npm run deploy:cloudrun
 ```
 
-`NODE_ENV=production` is set by Vercel. Do not set `APP_PLAN_OVERRIDE` in
-production; the app ignores it there anyway.
+That runs `gcloud builds submit --config cloudbuild.yaml` with the short git
+SHA as the image tag: Cloud Build builds the Docker image, pushes it, and
+deploys a new Cloud Run revision. Expect ~5–10 minutes; the image build
+dominates.
 
-## First-time Vercel setup
+Requirements on the machine running it: `gcloud` logged in
+(`gcloud auth login`), project set (`gcloud config set project discount-494316`),
+and billing enabled on the project. Nothing else — Docker is not needed
+locally.
 
-1. Create a Neon database. The easiest path is the Neon integration in the
-   Vercel Marketplace, which creates the database and injects `DATABASE_URL`
-   into the project. Pick the Neon region closest to the Vercel function
-   region. `vercel.json` pins functions to `arn1` (Stockholm) to match the
-   previous europe-north1 deployment; change both together if your merchants
-   are elsewhere.
-2. Import the repository into Vercel. The `@vercel/react-router` preset in
-   `react-router.config.ts` is picked up automatically; the build command is
-   `npm run build`.
-3. Add the Shopify environment variables listed above.
-4. Run the session table migration once against the production database:
+The database table is created once with:
 
-   ```shell
-   vercel env pull .env.vercel.local
-   DATABASE_URL=$(grep DATABASE_URL .env.vercel.local | cut -d= -f2-) npm run db:migrate
-   ```
+```shell
+DATABASE_URL=<neon url> npm run db:migrate
+```
 
-   Migrations are idempotent, so re-running them is safe.
-5. Deploy. Copy the production domain Vercel assigns (or attach a custom
-   domain).
-6. Put that domain in `shopify.app.toml` (`application_url` and
-   `redirect_urls`) and in the `SHOPIFY_APP_URL` env var, then:
+## Changing the app URL
 
-   ```shell
-   shopify app config validate
-   shopify app deploy
-   ```
+If you attach a custom domain (Cloud Run > Domain mappings, or a load
+balancer) or move regions:
 
-   `shopify app deploy` also publishes the discount function extension and
-   registers the webhooks.
+1. Update `_SHOPIFY_APP_URL` in `cloudbuild.yaml` and redeploy.
+2. Update `application_url` and `redirect_urls` in `shopify.app.toml`.
+3. `shopify app deploy` so Shopify sends merchants to the new URL.
 
-## Preview deployments
-
-Vercel preview URLs change per branch. Shopify only accepts requests from the
-URLs in the app config, so previews cannot be opened inside Shopify Admin
-without updating the config. Use `npm run dev` with a dev store for feature
-work and treat previews as build checks only.
+Do this before App Store submission; a URL change after approval means a new
+review.
 
 ## Development Workflow
 
@@ -99,21 +104,12 @@ real Shopify billing state.
 
 ## Production Checklist
 
-1. Neon database created and `DATABASE_URL` present in Vercel.
-2. `npm run db:migrate` run against production.
-3. `SHOPIFY_BILLING_TEST=false`, `APP_PLAN_OVERRIDE` unset.
-4. `shopify.app.toml` URLs match the Vercel domain.
-5. `shopify app deploy` run after the Vercel deploy.
+1. Billing enabled on `discount-494316` (the service disappears if the billing
+   account closes).
+2. Secrets present in Secret Manager; `npm run db:migrate` run against Neon.
+3. `npm run deploy:cloudrun` succeeded; the service URL answers.
+4. `shopify.app.toml` URLs match the service URL; `shopify app deploy` run.
+5. `APP_PLAN_OVERRIDE` unset (it is ignored in production anyway).
 
-## Verification
-
-Before submitting to the Shopify App Store:
-
-- Install the production app on a test store.
-- Confirm Free plan limitations and the upgrade prompts.
-- Start a Pro trial, confirm paid features unlock and the trial badge shows.
-- Approve Enterprise billing and confirm unlimited active discounts.
-- Downgrade to Free and confirm the over-limit banner and Free limitations.
-- Create, edit, activate, deactivate, and delete discounts; confirm the
-  status in Shopify Admin > Discounts matches the app.
-- Confirm webhooks are registered after deploy.
+See [app-store-submission.md](app-store-submission.md) for the listing and
+verification steps.

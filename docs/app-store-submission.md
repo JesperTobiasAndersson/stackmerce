@@ -22,15 +22,16 @@ Dashboard / hosting tasks that only the app owner can complete.
 
 ## Hosting (owner)
 
-- [ ] Move the Vercel project to a Pro team. Hobby's terms forbid commercial
-      use, and a paid App Store listing is commercial use.
-- [ ] Decide the final domain (`stackmerce-discount.vercel.app` or a custom
-      domain such as `discount.stackmerce.app`) **before** submitting. Changing
+- [ ] Billing must stay enabled on the GCP project (`discount-494316`); the
+      old deployment disappeared when the billing account was closed.
+- [ ] Decide the final domain (the Cloud Run URL or a custom domain such as
+      `discount.stackmerce.app`) **before** submitting. Changing
       `application_url` after approval triggers another review. Update
-      `shopify.app.toml`, `SHOPIFY_APP_URL`, redeploy, `shopify app deploy`.
+      `shopify.app.toml`, `_SHOPIFY_APP_URL` in `cloudbuild.yaml`, redeploy,
+      `shopify app deploy`.
 - [ ] Consider Neon Launch to avoid auto-suspend cold starts (they add ~0.5 s
       to the first admin load after idle, which counts against Core Web Vitals).
-- [ ] Turn on a Vercel log drain or add error monitoring (e.g. Sentry) so a
+- [ ] Set up a Cloud Logging alert on Cloud Run 5xx responses (or add Sentry) so a
       failing save or checkout function config is noticed.
 
 ## Partner Dashboard (owner)

@@ -1,0 +1,49 @@
+# Builds the container, pushes it to Artifact Registry, and deploys Cloud Run.
+# Run from the repo root:  gcloud builds submit --config cloudbuild.yaml
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE_URI}:${_TAG}", "-t", "${_IMAGE_URI}:latest", "."]
+
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_IMAGE_URI}"]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --image=${_IMAGE_URI}:${_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=3000
+      - --service-account=${_SERVICE_ACCOUNT}
+      - --cpu=1
+      - --memory=512Mi
+      - --concurrency=80
+      - --timeout=60s
+      - --min-instances=0
+      - --max-instances=${_MAX_INSTANCES}
+      # Startup CPU boost is billed only while the instance starts and roughly
+      # halves the cold start, which matters for Shopify's Core Web Vitals check.
+      - --cpu-boost
+      - --set-env-vars=^|^NODE_ENV=production|SHOPIFY_APP_URL=${_SHOPIFY_APP_URL}|SCOPES=${_SCOPES}|SESSION_STORAGE_BACKEND=neon|SESSION_STORAGE_TABLE=shopify_sessions|SHOPIFY_BILLING_TEST=false
+      - --set-secrets=SHOPIFY_API_KEY=shopify-api-key:latest,SHOPIFY_API_SECRET=shopify-api-secret:latest,DATABASE_URL=database-url:latest
+
+images:
+  - ${_IMAGE_URI}:${_TAG}
+  - ${_IMAGE_URI}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _SERVICE_NAME: discount-app
+  _REGION: europe-west3
+  _SERVICE_ACCOUNT: discount-app-run@discount-494316.iam.gserviceaccount.com
+  _MAX_INSTANCES: "3"
+  _TAG: manual
+  _IMAGE_URI: europe-west3-docker.pkg.dev/discount-494316/discount-app/discount-app
+  _SHOPIFY_APP_URL: https://discount-app-437971048935.europe-west3.run.app
+  _SCOPES: read_discounts,write_discounts,read_shipping,read_markets

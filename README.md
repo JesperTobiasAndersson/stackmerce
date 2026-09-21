@@ -10,7 +10,8 @@ and Shopify Functions.
   checkout, so the app server only serves the embedded admin, auth, billing,
   and webhooks.
 - Local development uses file-backed session storage.
-- Production runs on Vercel with Shopify sessions in Neon Postgres.
+- Production runs on Google Cloud Run (scale to zero) with Shopify sessions in
+  Neon Postgres.
 
 ## Local development
 
@@ -27,16 +28,15 @@ Discount function tests:
 npm test
 ```
 
-## Production on Vercel
+## Production on Google Cloud Run
 
 See [docs/deployment.md](docs/deployment.md) for the full setup. In short:
 
-1. Connect the Neon integration in Vercel (sets `DATABASE_URL`).
-2. Set `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`, `SCOPES`,
-   `SHOPIFY_BILLING_TEST=false`, `SESSION_STORAGE_BACKEND=neon`.
-3. Run `npm run db:migrate` once against the production database.
-4. Deploy, then update `shopify.app.toml` with the Vercel domain and run
-   `shopify app deploy`.
+1. Secrets `shopify-api-key`, `shopify-api-secret`, and `database-url` (Neon)
+   live in Secret Manager; non-secret settings are in `cloudbuild.yaml`.
+2. Run `npm run db:migrate` once against the Neon database.
+3. `npm run deploy:cloudrun` builds the image and deploys it.
+4. After a URL change, update `shopify.app.toml` and run `shopify app deploy`.
 
 Storage details are in [docs/native-storage.md](docs/native-storage.md).
 The App Store submission checklist is in [docs/app-store-submission.md](docs/app-store-submission.md).

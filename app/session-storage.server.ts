@@ -12,11 +12,8 @@ function selectedBackend() {
     return process.env.SESSION_STORAGE_BACKEND.toLowerCase();
   }
 
-  // Vercel sets VERCEL=1 in every deployment (preview and production), and the
-  // function filesystem is read-only, so the file store is never an option there.
-  return process.env.NODE_ENV === "production" || process.env.VERCEL
-    ? "neon"
-    : "file";
+  // Cloud Run has an ephemeral filesystem, so production always uses Neon.
+  return process.env.NODE_ENV === "production" ? "neon" : "file";
 }
 
 function createSessionStorage(): AppSessionStorage {

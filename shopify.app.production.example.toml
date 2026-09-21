@@ -4,7 +4,7 @@
 
 client_id = "2bf6876a2bbf4381c85973f61ddfa5cb"
 name = "Discount - Stackmerce"
-application_url = "https://YOUR-VERCEL-DOMAIN.vercel.app"
+application_url = "https://YOUR-CLOUD-RUN-SERVICE.run.app"
 embedded = true
 
 [build]
@@ -30,5 +30,5 @@ api_version = "2026-07"
 scopes = "read_discounts,write_discounts,read_shipping,read_markets"
 
 [auth]
-redirect_urls = [ "https://YOUR-VERCEL-DOMAIN.vercel.app/auth/callback" ]
+redirect_urls = [ "https://YOUR-CLOUD-RUN-SERVICE.run.app/auth/callback" ]
 
