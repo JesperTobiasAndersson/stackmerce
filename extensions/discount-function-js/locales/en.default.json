@@ -1,4 +1,4 @@
 {
-  "name": "discount-function-js",
-  "description": "discount-function-js"
+  "name": "Automatic discount campaign",
+  "description": "Product, order, and shipping discounts with product, collection, minimum, market, and schedule conditions. Applied automatically at checkout."
 }
