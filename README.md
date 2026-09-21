@@ -39,3 +39,4 @@ See [docs/deployment.md](docs/deployment.md) for the full setup. In short:
    `shopify app deploy`.
 
 Storage details are in [docs/native-storage.md](docs/native-storage.md).
+The App Store submission checklist is in [docs/app-store-submission.md](docs/app-store-submission.md).

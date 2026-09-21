@@ -1,10 +1,13 @@
 import type { CampaignFormInput } from "./campaign-storage.server";
+import type { FieldErrorKey, FormError } from "./form-errors";
+export { campaignInputFromForm } from "./campaign-form-input";
+import { withLocale, type Locale, type TranslationKey } from "./i18n";
 
 /**
  * Where to go after saving. Merchants who opened the editor from Shopify's
  * own Discounts page (via the function's `ui.paths`) are sent back there.
  */
-export function afterSaveUrl(request: Request, saved: string) {
+export function afterSaveUrl(request: Request, saved: string, locale: Locale) {
   const returnTo = new URL(request.url).searchParams.get("returnTo");
   const params = new URLSearchParams({ saved });
 
@@ -12,111 +15,15 @@ export function afterSaveUrl(request: Request, saved: string) {
     params.set("returnTo", "discounts");
   }
 
-  return `/app/campaigns?${params.toString()}`;
+  return withLocale(`/app/campaigns?${params.toString()}`, locale);
 }
 
-/** Parses the campaign editor's POST body into the storage input shape. */
-export function campaignInputFromForm(formData: FormData): CampaignFormInput {
-  return {
-    name: String(formData.get("name") || "").trim(),
-    status: formValue(formData, "status", ["active", "inactive"], "inactive"),
-    productDiscountType: formValue(
-      formData,
-      "productDiscountType",
-      ["none", "percentage", "fixed_amount", "buy_one_get_one_free", "volume_tier"],
-      "none",
-    ),
-    productDiscountPercentage: optionalNumber(
-      formData.get("productDiscountPercentage"),
-    ),
-    productDiscountFixedAmount: optionalString(
-      formData.get("productDiscountFixedAmount"),
-    ),
-    productDiscountFixedCurrencyCode: optionalCurrency(
-      formData.get("productDiscountFixedCurrencyCode"),
-    ),
-    productDiscountBuyQuantity: optionalNumber(
-      formData.get("productDiscountBuyQuantity"),
-    ),
-    productDiscountFreeQuantity: optionalNumber(
-      formData.get("productDiscountFreeQuantity"),
-    ),
-    productDiscountVolumeTiers: volumeTiersFromForm(formData),
-    orderDiscountType: formValue(
-      formData,
-      "orderDiscountType",
-      ["none", "percentage", "fixed_amount"],
-      "none",
-    ),
-    orderDiscountPercentage: optionalNumber(
-      formData.get("orderDiscountPercentage"),
-    ),
-    orderDiscountMaximumAmount: optionalString(
-      formData.get("orderDiscountMaximumAmount"),
-    ),
-    orderDiscountMaximumCurrencyCode: optionalCurrency(
-      formData.get("orderDiscountMaximumCurrencyCode"),
-    ),
-    orderDiscountFixedAmount: optionalString(
-      formData.get("orderDiscountFixedAmount"),
-    ),
-    orderDiscountFixedCurrencyCode: optionalCurrency(
-      formData.get("orderDiscountFixedCurrencyCode"),
-    ),
-    productIds: selectedIds(formData, "productIds"),
-    collectionIds: selectedIds(formData, "collectionIds"),
-    excludedProductIds: selectedIds(formData, "excludedProductIds"),
-    excludedCollectionIds: selectedIds(formData, "excludedCollectionIds"),
-    shippingDiscountType: formValue(
-      formData,
-      "shippingDiscountType",
-      ["none", "free_shipping", "percentage", "fixed_amount"],
-      "none",
-    ),
-    shippingDiscountPercentage: optionalNumber(
-      formData.get("shippingDiscountPercentage"),
-    ),
-    shippingDiscountFixedAmount: optionalString(
-      formData.get("shippingDiscountFixedAmount"),
-    ),
-    shippingDiscountFixedCurrencyCode: optionalCurrency(
-      formData.get("shippingDiscountFixedCurrencyCode"),
-    ),
-    shippingDeliveryOptionHandle: optionalString(
-      formData.get("shippingDeliveryOptionHandle"),
-    ),
-    shippingDeliveryOptionTitle: optionalString(
-      formData.get("shippingDeliveryOptionTitle"),
-    ),
-    marketHandle: optionalString(formData.get("marketHandle")),
-    marketName: optionalString(formData.get("marketName")),
-    combinesWithOrderDiscounts:
-      formData.get("combinesWithOrderDiscounts") === "true",
-    combinesWithProductDiscounts:
-      formData.get("combinesWithProductDiscounts") === "true",
-    combinesWithShippingDiscounts:
-      formData.get("combinesWithShippingDiscounts") === "true",
-    minimumCartSubtotalAmount: optionalString(
-      formData.get("minimumCartSubtotalAmount"),
-    ),
-    minimumCartSubtotalCurrencyCode: optionalCurrency(
-      formData.get("minimumCartSubtotalCurrencyCode"),
-    ),
-    minimumCartQuantity: optionalNumber(formData.get("minimumCartQuantity")),
-    startsAt: optionalString(formData.get("startsAt")),
-    endsAt: optionalString(formData.get("endsAt")),
-  };
-}
-
-/**
- * Field-level validation. Messages are matched by keyword in the editor to
- * attach them to fields and tabs, so keep the labels stable.
- */
-export function validateCampaignInput(input: CampaignFormInput) {
-  const errors: string[] = [];
+/** Field-level validation. Returns structured errors the editor translates. */
+export function validateCampaignInput(input: CampaignFormInput): FormError[] {
+  const errors: FormError[] = [];
 
   if (!input.name) {
-    errors.push("Campaign name is required.");
+    errors.push({ field: "name", key: "error.name.required" });
   }
 
   if (
@@ -124,29 +31,27 @@ export function validateCampaignInput(input: CampaignFormInput) {
     input.orderDiscountType === "none" &&
     input.shippingDiscountType === "none"
   ) {
-    errors.push("Choose at least one discount type (product, order, or shipping).");
+    errors.push({ field: "discountType", key: "error.type.required" });
   }
 
   if (input.productDiscountType === "percentage") {
-    validatePercentage(
-      input.productDiscountPercentage,
-      "Product discount percentage",
-      errors,
-    );
+    validatePercentage(input.productDiscountPercentage, "productPercentage", "label.productPercentage", errors);
   }
 
   if (input.productDiscountType === "fixed_amount") {
-    validateFixedAmount(
+    validateMoney(
       input.productDiscountFixedAmount,
       input.productDiscountFixedCurrencyCode,
-      "Product fixed discount",
+      "productFixedAmount",
+      "productFixedCurrency",
+      "label.productFixed",
       errors,
     );
   }
 
   if (input.productDiscountType === "buy_one_get_one_free") {
-    validateWholeNumber(input.productDiscountBuyQuantity, "Buy quantity", errors);
-    validateWholeNumber(input.productDiscountFreeQuantity, "Free quantity", errors);
+    validateWholeNumber(input.productDiscountBuyQuantity, "productBuyQuantity", "label.buyQuantity", errors);
+    validateWholeNumber(input.productDiscountFreeQuantity, "productFreeQuantity", "label.freeQuantity", errors);
   }
 
   if (input.productDiscountType === "volume_tier") {
@@ -154,225 +59,152 @@ export function validateCampaignInput(input: CampaignFormInput) {
   }
 
   if (input.orderDiscountType === "percentage") {
-    validatePercentage(
-      input.orderDiscountPercentage,
-      "Order discount percentage",
-      errors,
-    );
-    validateOptionalMoney(
-      input.orderDiscountMaximumAmount,
-      input.orderDiscountMaximumCurrencyCode,
-      "Order maximum discount",
-      errors,
-    );
+    validatePercentage(input.orderDiscountPercentage, "orderPercentage", "label.orderPercentage", errors);
+    if (input.orderDiscountMaximumAmount) {
+      validateMoney(
+        input.orderDiscountMaximumAmount,
+        input.orderDiscountMaximumCurrencyCode,
+        "orderMaximumAmount",
+        "orderMaximumCurrency",
+        "label.orderMaximum",
+        errors,
+      );
+    }
   }
 
   if (input.orderDiscountType === "fixed_amount") {
-    validateFixedAmount(
+    validateMoney(
       input.orderDiscountFixedAmount,
       input.orderDiscountFixedCurrencyCode,
-      "Order fixed discount",
+      "orderFixedAmount",
+      "orderFixedCurrency",
+      "label.orderFixed",
       errors,
     );
   }
 
   if (input.shippingDiscountType === "percentage") {
-    validatePercentage(
-      input.shippingDiscountPercentage,
-      "Shipping discount percentage",
-      errors,
-    );
+    validatePercentage(input.shippingDiscountPercentage, "shippingPercentage", "label.shippingPercentage", errors);
   }
 
   if (input.shippingDiscountType === "fixed_amount") {
-    validateFixedAmount(
+    validateMoney(
       input.shippingDiscountFixedAmount,
       input.shippingDiscountFixedCurrencyCode,
-      "Shipping fixed discount",
+      "shippingFixedAmount",
+      "shippingFixedCurrency",
+      "label.shippingFixed",
       errors,
     );
   }
 
-  validateOptionalMoney(
-    input.minimumCartSubtotalAmount,
-    input.minimumCartSubtotalCurrencyCode,
-    "Minimum cart subtotal",
-    errors,
-  );
-  validateOptionalWholeNumber(
-    input.minimumCartQuantity,
-    "Minimum cart quantity",
-    errors,
-  );
+  if (input.minimumCartSubtotalAmount) {
+    validateMoney(
+      input.minimumCartSubtotalAmount,
+      input.minimumCartSubtotalCurrencyCode,
+      "minimumSubtotalAmount",
+      "minimumSubtotalCurrency",
+      "label.minSubtotal",
+      errors,
+    );
+  }
+
+  if (
+    input.minimumCartQuantity !== undefined &&
+    (!Number.isInteger(input.minimumCartQuantity) || input.minimumCartQuantity <= 0)
+  ) {
+    errors.push({
+      field: "minimumCartQuantity",
+      key: "error.whole.range",
+      paramKeys: { label: "label.minQuantity" },
+    });
+  }
+
   validateDateRange(input.startsAt, input.endsAt, errors);
 
   return errors;
 }
 
-function formValue<TValue extends string>(
-  formData: FormData,
-  key: string,
-  allowedValues: TValue[],
-  fallback: TValue,
-) {
-  const value = String(formData.get(key) || "");
-
-  return allowedValues.includes(value as TValue) ? (value as TValue) : fallback;
-}
-
-function optionalNumber(value: FormDataEntryValue | null) {
-  if (value === null || String(value).trim() === "") {
-    return undefined;
-  }
-
-  return Number(value);
-}
-
-function optionalString(value: FormDataEntryValue | null) {
-  const stringValue = String(value || "").trim();
-
-  return stringValue || undefined;
-}
-
-function optionalCurrency(value: FormDataEntryValue | null) {
-  return optionalString(value)?.toUpperCase();
-}
-
-function selectedIds(formData: FormData, key: string) {
-  return formData
-    .getAll(key)
-    .map((value) => String(value).trim())
-    .filter(Boolean);
-}
-
-function volumeTiersFromForm(formData: FormData) {
-  const minimumQuantities = formData.getAll("productVolumeTierMinimumQuantity");
-  const percentages = formData.getAll("productVolumeTierPercentage");
-
-  return minimumQuantities.flatMap((minimumQuantity, index) => {
-    const minimum = optionalNumber(minimumQuantity);
-    const percentage = optionalNumber(percentages[index] ?? null);
-
-    if (minimum === undefined && percentage === undefined) {
-      return [];
-    }
-
-    return [
-      {
-        minimumQuantity: minimum ?? 0,
-        percentage: percentage ?? 0,
-      },
-    ];
-  });
-}
-
 function validateVolumeTiers(
   tiers: CampaignFormInput["productDiscountVolumeTiers"],
-  errors: string[],
+  errors: FormError[],
 ) {
   if (!tiers?.length) {
-    errors.push("At least one volume discount tier is required.");
+    errors.push({ field: "productVolumeTiers", key: "error.tiers.required" });
     return;
   }
 
   for (const tier of tiers) {
-    validateWholeNumber(
-      tier.minimumQuantity,
-      "Volume tier minimum quantity",
-      errors,
-    );
-    validatePercentage(tier.percentage, "Volume tier percentage", errors);
+    validateWholeNumber(tier.minimumQuantity, "productVolumeTiers", "label.tierMin", errors);
+    validatePercentage(tier.percentage, "productVolumeTiers", "label.tierPct", errors);
   }
 }
 
 function validatePercentage(
   value: number | undefined,
-  label: string,
-  errors: string[],
+  field: FieldErrorKey,
+  labelKey: TranslationKey,
+  errors: FormError[],
 ) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    errors.push(`${label} is required.`);
+    errors.push({ field, key: "error.percentage.required", paramKeys: { label: labelKey } });
     return;
   }
 
   if (value <= 0 || value > 100) {
-    errors.push(`${label} must be greater than 0 and at most 100.`);
+    errors.push({ field, key: "error.percentage.range", paramKeys: { label: labelKey } });
   }
 }
 
-function validateFixedAmount(
+function validateMoney(
   amount: string | undefined,
   currencyCode: string | undefined,
-  label: string,
-  errors: string[],
+  amountField: FieldErrorKey,
+  currencyField: FieldErrorKey,
+  labelKey: TranslationKey,
+  errors: FormError[],
 ) {
   const numericAmount = Number(amount);
 
   if (!amount || !Number.isFinite(numericAmount) || numericAmount <= 0) {
-    errors.push(`${label} amount must be greater than 0.`);
+    errors.push({ field: amountField, key: "error.amount.required", paramKeys: { label: labelKey } });
   }
 
   if (!currencyCode || !/^[A-Z]{3}$/.test(currencyCode)) {
-    errors.push(`${label} currency must be a 3-letter code.`);
-  }
-}
-
-function validateOptionalMoney(
-  amount: string | undefined,
-  currencyCode: string | undefined,
-  label: string,
-  errors: string[],
-) {
-  if (!amount) {
-    return;
-  }
-
-  validateFixedAmount(amount, currencyCode, label, errors);
-}
-
-function validateOptionalWholeNumber(
-  value: number | undefined,
-  label: string,
-  errors: string[],
-) {
-  if (value === undefined) {
-    return;
-  }
-
-  if (!Number.isInteger(value) || value <= 0) {
-    errors.push(`${label} must be a whole number greater than 0.`);
+    errors.push({ field: currencyField, key: "error.currency.invalid", paramKeys: { label: labelKey } });
   }
 }
 
 function validateWholeNumber(
   value: number | undefined,
-  label: string,
-  errors: string[],
+  field: FieldErrorKey,
+  labelKey: TranslationKey,
+  errors: FormError[],
 ) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    errors.push(`${label} is required.`);
+    errors.push({ field, key: "error.whole.required", paramKeys: { label: labelKey } });
     return;
   }
 
   if (!Number.isInteger(value) || value <= 0) {
-    errors.push(`${label} must be a whole number greater than 0.`);
+    errors.push({ field, key: "error.whole.range", paramKeys: { label: labelKey } });
   }
 }
 
 function validateDateRange(
   startsAt: string | undefined,
   endsAt: string | undefined,
-  errors: string[],
+  errors: FormError[],
 ) {
   if (startsAt && !/^\d{4}-\d{2}-\d{2}$/.test(startsAt)) {
-    errors.push("Start date must be a valid date.");
+    errors.push({ field: "startsAt", key: "error.date.invalid", paramKeys: { label: "label.startDate" } });
   }
 
   if (endsAt && !/^\d{4}-\d{2}-\d{2}$/.test(endsAt)) {
-    errors.push("End date must be a valid date.");
+    errors.push({ field: "endsAt", key: "error.date.invalid", paramKeys: { label: "label.endDate" } });
   }
 
   if (startsAt && endsAt && startsAt > endsAt) {
-    errors.push("Start date must be before end date.");
+    errors.push({ field: "endsAt", key: "error.date.order" });
   }
 }

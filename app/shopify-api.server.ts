@@ -55,12 +55,14 @@ export interface ShopifyProductSummary {
   title: string;
   handle: string;
   status: string;
+  imageUrl?: string | null;
 }
 
 export interface ShopifyCollectionSummary {
   id: string;
   title: string;
   handle: string;
+  imageUrl?: string | null;
 }
 
 export interface ShopifyShippingMethodSummary {
@@ -92,11 +94,11 @@ export interface ShopifyCampaignSummary {
   shopifyStatus: string;
   discountType: string;
   functionId: string;
-}
-
-export interface ShopifyCampaignDetail extends ShopifyCampaignSummary {
+  /** Stored campaign configuration (the metafield the function reads). */
   config: CampaignConfig;
 }
+
+export type ShopifyCampaignDetail = ShopifyCampaignSummary;
 
 export interface CreateCampaignInput {
   name: string;
@@ -166,39 +168,6 @@ const CURRENCY_CACHE_TTL_MS = 10 * 60_000;
 const SHIPPING_METHODS_CACHE_TTL_MS = 10 * 60_000;
 const MARKETS_CACHE_TTL_MS = 10 * 60_000;
 
-const PRODUCTS_QUERY = `#graphql
-  query Products($first: Int!, $after: String, $query: String) {
-    products(first: $first, after: $after, query: $query) {
-      nodes {
-        id
-        title
-        handle
-        status
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-    }
-  }
-`;
-
-const COLLECTIONS_QUERY = `#graphql
-  query Collections($first: Int!, $after: String, $query: String) {
-    collections(first: $first, after: $after, query: $query) {
-      nodes {
-        id
-        title
-        handle
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-    }
-  }
-`;
-
 const PRODUCTS_BY_IDS_QUERY = `#graphql
   query ProductsByIds($ids: [ID!]!) {
     nodes(ids: $ids) {
@@ -207,6 +176,13 @@ const PRODUCTS_BY_IDS_QUERY = `#graphql
         title
         handle
         status
+        featuredMedia {
+          preview {
+            image {
+              url(transform: { maxWidth: 80, maxHeight: 80 })
+            }
+          }
+        }
       }
     }
   }
@@ -219,6 +195,9 @@ const COLLECTIONS_BY_IDS_QUERY = `#graphql
         id
         title
         handle
+        image {
+          url(transform: { maxWidth: 80, maxHeight: 80 })
+        }
       }
     }
   }
@@ -413,28 +392,6 @@ const SHOP_CURRENCY_INFO_QUERY = `#graphql
   }
 `;
 
-export async function listProducts(
-  admin: ShopifyAdminClient,
-  options: ListShopifyResourcesOptions = {},
-): Promise<ShopifyConnectionResult<ShopifyProductSummary>> {
-  const data = await shopifyGraphql<{
-    products: ShopifyConnectionResult<ShopifyProductSummary>;
-  }>(admin, PRODUCTS_QUERY, connectionVariables(options));
-
-  return data.products;
-}
-
-export async function listCollections(
-  admin: ShopifyAdminClient,
-  options: ListShopifyResourcesOptions = {},
-): Promise<ShopifyConnectionResult<ShopifyCollectionSummary>> {
-  const data = await shopifyGraphql<{
-    collections: ShopifyConnectionResult<ShopifyCollectionSummary>;
-  }>(admin, COLLECTIONS_QUERY, connectionVariables(options));
-
-  return data.collections;
-}
-
 export async function getProductsByIds(
   admin: ShopifyAdminClient,
   ids: string[],
@@ -444,10 +401,27 @@ export async function getProductsByIds(
   }
 
   const data = await shopifyGraphql<{
-    nodes: Array<ShopifyProductSummary | null>;
-  }>(admin, PRODUCTS_BY_IDS_QUERY, {ids});
+    nodes: Array<
+      | (ShopifyProductSummary & {
+          featuredMedia?: { preview?: { image?: { url?: string } | null } | null } | null;
+        })
+      | null
+    >;
+  }>(admin, PRODUCTS_BY_IDS_QUERY, { ids });
 
-  return data.nodes.filter(Boolean) as ShopifyProductSummary[];
+  return data.nodes.flatMap((node) =>
+    node
+      ? [
+          {
+            id: node.id,
+            title: node.title,
+            handle: node.handle,
+            status: node.status,
+            imageUrl: node.featuredMedia?.preview?.image?.url ?? null,
+          },
+        ]
+      : [],
+  );
 }
 
 export async function getCollectionsByIds(
@@ -459,10 +433,21 @@ export async function getCollectionsByIds(
   }
 
   const data = await shopifyGraphql<{
-    nodes: Array<ShopifyCollectionSummary | null>;
-  }>(admin, COLLECTIONS_BY_IDS_QUERY, {ids});
+    nodes: Array<(ShopifyCollectionSummary & { image?: { url?: string } | null }) | null>;
+  }>(admin, COLLECTIONS_BY_IDS_QUERY, { ids });
 
-  return data.nodes.filter(Boolean) as ShopifyCollectionSummary[];
+  return data.nodes.flatMap((node) =>
+    node
+      ? [
+          {
+            id: node.id,
+            title: node.title,
+            handle: node.handle,
+            imageUrl: node.image?.url ?? null,
+          },
+        ]
+      : [],
+  );
 }
 
 export async function listShippingMethods(
@@ -1063,6 +1048,7 @@ function campaignFromDiscountNode(
       shopifyStatus,
       discountType: campaignDiscountType(config),
       functionId: discount.appDiscountType?.functionId ?? "",
+      config: config as CampaignConfig,
     },
   ];
 }
@@ -1075,10 +1061,7 @@ function campaignDetailFromDiscountNode(
     return null;
   }
 
-  return {
-    ...summary,
-    config: node.metafield?.jsonValue as CampaignConfig,
-  };
+  return summary;
 }
 
 function buildBasicCampaignConfig(input: CreateCampaignInput): CampaignConfig {

@@ -3,10 +3,18 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { redirect, useActionData, useLoaderData, useLocation, useNavigation } from "react-router";
+import {
+  redirect,
+  useActionData,
+  useLoaderData,
+  useLocation,
+  useNavigation,
+  useRouteError,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { CampaignForm, emptyCampaignFormInput } from "../components/campaign-form";
+import { DiscountRouteError } from "../components/route-error";
 import { getCurrentPlan } from "../billing.server";
 import {
   afterSaveUrl,
@@ -15,6 +23,9 @@ import {
 } from "../campaign-form.server";
 import { loadActiveCampaignCount, saveNewCampaign } from "../campaign-storage.server";
 import { validateCampaignEntitlements, type AppPlan } from "../entitlements";
+import { rawError, type FormError } from "../form-errors";
+import { resolveLocale } from "../i18n";
+import { useTranslation } from "../i18n/react";
 import type {
   ShopifyMarketSummary,
   ShopifyShippingMethodSummary,
@@ -54,13 +65,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const locale = resolveLocale(request);
   const formData = await request.formData();
   const campaign = campaignInputFromForm(formData);
   const [plan, activeCampaignCount] = await Promise.all([
     getCurrentPlan(admin, session.shop),
     loadActiveCampaignCount(admin),
   ]);
-  const errors = [
+  const errors: FormError[] = [
     ...validateCampaignInput(campaign),
     ...validateCampaignEntitlements({ activeCampaignCount, input: campaign, plan }),
   ];
@@ -73,23 +85,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await saveNewCampaign(admin, campaign);
   } catch (error) {
     return {
-      errors: [error instanceof Error ? error.message : "Could not save campaign."],
+      errors: [
+        error instanceof Error
+          ? rawError(error.message)
+          : ({ field: null, key: "error.save.failed" } satisfies FormError),
+      ],
     };
   }
 
-  return redirect(afterSaveUrl(request, "created"));
+  return redirect(afterSaveUrl(request, "created", locale));
 };
 
 export default function NewCampaign() {
   const data = useLoaderData<typeof loader>() as NewCampaignLoaderData;
   const actionData = useActionData<typeof action>();
+  const { t } = useTranslation();
   const { search } = useLocation();
   const navigation = useNavigation();
 
   return (
-    <s-page heading="Create discount">
+    <s-page heading={t("editor.createTitle")}>
       <s-link href={`/app/campaigns${search}`} slot="breadcrumb-actions">
-        Discounts
+        {t("editor.back")}
       </s-link>
 
       <CampaignForm
@@ -106,6 +123,10 @@ export default function NewCampaign() {
       />
     </s-page>
   );
+}
+
+export function ErrorBoundary() {
+  return <DiscountRouteError error={useRouteError()} />;
 }
 
 export const headers: HeadersFunction = (headersArgs) => {

@@ -10,10 +10,12 @@ import {
   useLoaderData,
   useLocation,
   useNavigation,
+  useRouteError,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { CampaignForm } from "../../components/campaign-form";
+import { DiscountRouteError } from "../../components/route-error";
 import { getCurrentPlan } from "../../billing.server";
 import type { CampaignConfig } from "../../campaign-config";
 import {
@@ -30,6 +32,9 @@ import {
   type CampaignFormInput,
 } from "../../campaign-storage.server";
 import { validateCampaignEntitlements, type AppPlan } from "../../entitlements";
+import { rawError, type FormError } from "../../form-errors";
+import { resolveLocale } from "../../i18n";
+import { useTranslation } from "../../i18n/react";
 import { flag } from "../../lib/polaris";
 import type {
   ShopifyCollectionSummary,
@@ -67,7 +72,7 @@ type CampaignEditLoaderData = {
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const campaignId = decodeCampaignId(params.campaignId);
-  const campaign = await loadCampaign(admin, campaignId);
+  const campaign = await loadCampaignOr404(admin, campaignId);
   const { conditions } = campaign.config;
   const [
     currencyInfo,
@@ -93,7 +98,7 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
 
   return {
     campaign: { id: campaign.id, name: campaign.name, status: campaign.status },
-    // The form's status reflects what the merchant can see in the list, which
+    // The form status reflects what the merchant can see in the list, which
     // also accounts for the discount being deactivated inside Shopify Admin.
     initialValues: campaignInputFromConfig(campaign.config, {
       status: campaign.status,
@@ -116,6 +121,7 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
 
 export const action = async ({ params, request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const locale = resolveLocale(request);
   const campaignId = decodeCampaignId(params.campaignId);
   const formData = await request.formData();
   const actionType = String(formData.get("_action") || "update");
@@ -123,11 +129,13 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   if (actionType === "delete") {
     try {
       await deleteCampaignById(admin, campaignId);
-      return redirect(afterSaveUrl(request, "deleted"));
+      return redirect(afterSaveUrl(request, "deleted", locale));
     } catch (error) {
       return {
         errors: [
-          error instanceof Error ? error.message : "Could not delete campaign.",
+          error instanceof Error
+            ? rawError(error.message)
+            : ({ field: null, key: "error.delete.failed" } satisfies FormError),
         ],
       };
     }
@@ -136,10 +144,10 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
   const campaign = campaignInputFromForm(formData);
   const [plan, existingCampaign, activeCampaignCount] = await Promise.all([
     getCurrentPlan(admin, session.shop),
-    loadCampaign(admin, campaignId),
+    loadCampaignOr404(admin, campaignId),
     loadActiveCampaignCount(admin),
   ]);
-  const errors = [
+  const errors: FormError[] = [
     ...validateCampaignInput(campaign),
     ...validateCampaignEntitlements({
       activeCampaignCount,
@@ -157,22 +165,27 @@ export const action = async ({ params, request }: ActionFunctionArgs) => {
     await saveCampaign(admin, campaignId, campaign, existingCampaign);
   } catch (error) {
     return {
-      errors: [error instanceof Error ? error.message : "Could not save campaign."],
+      errors: [
+        error instanceof Error
+          ? rawError(error.message)
+          : ({ field: null, key: "error.save.failed" } satisfies FormError),
+      ],
     };
   }
 
-  return redirect(afterSaveUrl(request, "updated"));
+  return redirect(afterSaveUrl(request, "updated", locale));
 };
 
 export default function CampaignEdit() {
   const data = useLoaderData<typeof loader>() as CampaignEditLoaderData;
   const actionData = useActionData<typeof action>();
+  const { t } = useTranslation();
   const { search } = useLocation();
   const navigation = useNavigation();
   const deleteFetcher = useFetcher<typeof action>();
   const isDeleting = deleteFetcher.state !== "idle";
   const isSaving = navigation.state === "submitting";
-  const errors = [
+  const errors: FormError[] = [
     ...(actionData?.errors ?? []),
     ...(deleteFetcher.data?.errors ?? []),
   ];
@@ -180,7 +193,7 @@ export default function CampaignEdit() {
   return (
     <s-page heading={data.campaign.name}>
       <s-link href={`/app/campaigns${search}`} slot="breadcrumb-actions">
-        Discounts
+        {t("editor.back")}
       </s-link>
       <s-button
         command="--show"
@@ -189,7 +202,7 @@ export default function CampaignEdit() {
         slot="secondary-actions"
         tone="critical"
       >
-        Delete
+        {t("common.delete")}
       </s-button>
 
       <CampaignForm
@@ -209,11 +222,8 @@ export default function CampaignEdit() {
         shippingMethods={data.shippingMethods}
       />
 
-      <s-modal heading="Delete discount?" id={DELETE_MODAL_ID}>
-        <s-paragraph>
-          This will permanently delete &quot;{data.campaign.name}&quot;. Customers
-          will stop receiving it immediately. This action cannot be undone.
-        </s-paragraph>
+      <s-modal heading={t("editor.delete.heading")} id={DELETE_MODAL_ID}>
+        <s-paragraph>{t("list.delete.text", { name: data.campaign.name })}</s-paragraph>
         <s-button
           command="--hide"
           commandFor={DELETE_MODAL_ID}
@@ -223,14 +233,18 @@ export default function CampaignEdit() {
           tone="critical"
           variant="primary"
         >
-          Delete discount
+          {t("list.delete.confirm")}
         </s-button>
         <s-button command="--hide" commandFor={DELETE_MODAL_ID} slot="secondary-actions">
-          Cancel
+          {t("common.cancel")}
         </s-button>
       </s-modal>
     </s-page>
   );
+}
+
+export function ErrorBoundary() {
+  return <DiscountRouteError error={useRouteError()} />;
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
@@ -239,10 +253,27 @@ export const headers: HeadersFunction = (headersArgs) => {
 
 function decodeCampaignId(campaignId: string | undefined) {
   if (!campaignId) {
-    throw new Response("Campaign id is required.", { status: 400 });
+    throw new Response("Discount id is required.", { status: 400 });
   }
 
   return decodeURIComponent(campaignId);
+}
+
+/** A deleted or foreign discount renders the not-found page, not a crash. */
+async function loadCampaignOr404(
+  admin: Parameters<typeof loadCampaign>[0],
+  campaignId: string,
+) {
+  try {
+    return await loadCampaign(admin, campaignId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/not found|not managed/i.test(message)) {
+      throw new Response(message, { status: 404 });
+    }
+
+    throw error;
+  }
 }
 
 /** Keep currencies the campaign already uses selectable even if the shop dropped them. */

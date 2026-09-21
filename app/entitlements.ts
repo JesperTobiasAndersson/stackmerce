@@ -1,4 +1,5 @@
 import type { CampaignFormInput } from "./campaign-storage.server";
+import type { FormError } from "./form-errors";
 
 export type AppPlan = "free" | "pro" | "enterprise";
 
@@ -81,15 +82,6 @@ export function formatCampaignLimit(limit: number) {
   return Number.isFinite(limit) ? String(limit) : "Unlimited";
 }
 
-export function activeCampaignLimitMessage(plan: AppPlan) {
-  const entitlements = entitlementForPlan(plan);
-  const limit = entitlements.maxActiveCampaigns;
-
-  return `${entitlements.name} includes ${formatCampaignLimit(limit)} active discount${
-    limit === 1 ? "" : "s"
-  }. Upgrade to activate more discounts.`;
-}
-
 /** True when activating one more campaign would exceed the plan's limit. */
 export function isAtActiveCampaignLimit(plan: AppPlan, activeCampaignCount: number) {
   return activeCampaignCount >= entitlementForPlan(plan).maxActiveCampaigns;
@@ -103,16 +95,25 @@ export function activeCampaignsOverLimit(plan: AppPlan, activeCampaignCount: num
   );
 }
 
+export type LockedFeatureKey =
+  | "feature.fixedAmount"
+  | "feature.bogo"
+  | "feature.volume"
+  | "feature.shipping"
+  | "feature.market"
+  | "feature.shippingMethod"
+  | "feature.scheduling";
+
 /**
- * Names of Pro/Enterprise features a campaign uses that the plan does not
- * include. Empty when the campaign is fully allowed on the plan.
+ * Translation keys of the Pro/Enterprise features a campaign uses that the
+ * plan does not include. Empty when the campaign is fully allowed on the plan.
  */
 export function lockedFeaturesForCampaign(
   input: CampaignFormInput,
   plan: AppPlan,
-): string[] {
+): LockedFeatureKey[] {
   const entitlements = entitlementForPlan(plan);
-  const locked: string[] = [];
+  const locked: LockedFeatureKey[] = [];
 
   if (
     !entitlements.fixedAmountDiscounts &&
@@ -120,43 +121,47 @@ export function lockedFeaturesForCampaign(
       input.orderDiscountType === "fixed_amount" ||
       input.shippingDiscountType === "fixed_amount")
   ) {
-    locked.push("Fixed amount discounts");
+    locked.push("feature.fixedAmount");
   }
 
-  if (
-    !entitlements.bogoDiscounts &&
-    input.productDiscountType === "buy_one_get_one_free"
-  ) {
-    locked.push("Buy X Get Y discounts");
+  if (!entitlements.bogoDiscounts && input.productDiscountType === "buy_one_get_one_free") {
+    locked.push("feature.bogo");
   }
 
   if (!entitlements.volumeTiers && input.productDiscountType === "volume_tier") {
-    locked.push("Volume tier discounts");
+    locked.push("feature.volume");
   }
 
   if (!entitlements.shippingDiscounts && input.shippingDiscountType !== "none") {
-    locked.push("Shipping discounts");
+    locked.push("feature.shipping");
   }
 
   if (!entitlements.marketTargeting && input.marketHandle) {
-    locked.push("Market targeting");
+    locked.push("feature.market");
   }
 
   if (!entitlements.shippingMethodTargeting && input.shippingDeliveryOptionHandle) {
-    locked.push("Shipping method targeting");
+    locked.push("feature.shippingMethod");
   }
 
   if (!entitlements.scheduling && (input.startsAt || input.endsAt)) {
-    locked.push("Scheduling");
+    locked.push("feature.scheduling");
   }
 
   return locked;
 }
 
-export function lockedFeatureMessage(feature: string) {
-  const verb = feature.endsWith("s") ? "are" : "is";
+export function activeCampaignLimitError(plan: AppPlan): FormError {
+  const entitlements = entitlementForPlan(plan);
 
-  return `${feature} ${verb} available on Pro and Enterprise.`;
+  return {
+    field: null,
+    key: "error.plan.limit",
+    params: {
+      plan: entitlements.name,
+      limit: formatCampaignLimit(entitlements.maxActiveCampaigns),
+    },
+  };
 }
 
 export function validateCampaignEntitlements({
@@ -169,8 +174,8 @@ export function validateCampaignEntitlements({
   currentCampaignIsActive?: boolean;
   input: CampaignFormInput;
   plan: AppPlan;
-}) {
-  const errors: string[] = [];
+}): FormError[] {
+  const errors: FormError[] = [];
 
   // Only *newly* activating a campaign counts against the limit. A merchant who
   // downgraded while over the limit can still edit campaigns that are already
@@ -180,11 +185,11 @@ export function validateCampaignEntitlements({
     !currentCampaignIsActive &&
     isAtActiveCampaignLimit(plan, activeCampaignCount)
   ) {
-    errors.push(activeCampaignLimitMessage(plan));
+    errors.push(activeCampaignLimitError(plan));
   }
 
   for (const feature of lockedFeaturesForCampaign(input, plan)) {
-    errors.push(lockedFeatureMessage(feature));
+    errors.push({ field: null, key: "error.plan.locked", paramKeys: { feature } });
   }
 
   return errors;

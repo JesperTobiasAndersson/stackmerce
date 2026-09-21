@@ -79,7 +79,18 @@ const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
   }
 `;
 
+const SHOP_PLAN_QUERY = `#graphql
+  query ShopPlanType {
+    shop {
+      plan {
+        partnerDevelopment
+      }
+    }
+  }
+`;
+
 const PLAN_CACHE_TTL_MS = 60_000;
+const SHOP_TYPE_CACHE_TTL_MS = 10 * 60_000;
 
 const FREE_SUMMARY: BillingSummary = { plan: "free", subscription: null };
 
@@ -130,6 +141,34 @@ export async function getCurrentPlan(
   options: BillingLookupOptions = {},
 ): Promise<AppPlan> {
   return (await getBillingSummary(admin, shop, options)).plan;
+}
+
+/**
+ * Development stores cannot approve real app charges, and Shopify's reviewers
+ * install from a development store in another Partner organization. Charges
+ * on such stores must be test charges or the upgrade flow fails for them.
+ */
+export async function isDevelopmentStore(
+  admin: ShopifyAdminClient,
+  shop: string,
+): Promise<boolean> {
+  try {
+    return await withRuntimeCache(`shop-type:${shop}`, SHOP_TYPE_CACHE_TTL_MS, async () => {
+      const response = await admin.graphql(SHOP_PLAN_QUERY);
+      const json = (await response.json()) as {
+        data?: { shop?: { plan?: { partnerDevelopment?: boolean } } };
+      };
+
+      return Boolean(json.data?.shop?.plan?.partnerDevelopment);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Test charges in non-production environments and on development stores. */
+export async function shouldUseTestBilling(admin: ShopifyAdminClient, shop: string) {
+  return isBillingTest() || (await isDevelopmentStore(admin, shop));
 }
 
 export function planCacheKey(shop: string) {

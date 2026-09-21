@@ -15,14 +15,15 @@ import {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useEffect } from "react";
 
-import { getBillingSummary, isBillingTest, planCacheKey } from "../billing.server";
+import { getBillingSummary, planCacheKey, shouldUseTestBilling } from "../billing.server";
 import {
   entitlementForPlan,
-  formatCampaignLimit,
   PAID_PLAN_TRIAL_DAYS,
   PLAN_ENTITLEMENTS,
   type AppPlan,
 } from "../entitlements";
+import { formatDate, resolveLocale, withLocale } from "../i18n";
+import { useTranslation } from "../i18n/react";
 import { loadActiveCampaignCount } from "../campaign-storage.server";
 import { flag, showToast } from "../lib/polaris";
 import { invalidateRuntimeCache } from "../runtime-cache.server";
@@ -49,29 +50,32 @@ const SHOPIFY_BILLING_PLANS: Record<
 };
 
 const DOWNGRADE_MODAL_ID = "downgrade-modal";
+const PLANS: AppPlan[] = ["free", "pro", "enterprise"];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
+  const locale = resolveLocale(request);
   const url = new URL(request.url);
   // Shopify appends charge_id when it sends the merchant back from the
   // subscription approval page; that request must not be served from cache.
   const approved =
     url.searchParams.has("charge_id") ||
     url.searchParams.get("billing") === "approved";
-  const [billing, activeCampaignCount] = await Promise.all([
+  const [billing, activeCampaignCount, billingTest] = await Promise.all([
     getBillingSummary(admin, session.shop, { fresh: approved }),
     loadActiveCampaignCount(admin),
+    shouldUseTestBilling(admin, session.shop),
   ]);
 
   return {
     currentPlan: billing.plan,
-    billingTest: isBillingTest(),
+    billingTest,
     trialEndsLabel: billing.subscription?.trialEndsAt
-      ? formatDate(billing.subscription.trialEndsAt)
+      ? formatDate(locale, billing.subscription.trialEndsAt, true)
       : null,
     nextChargeLabel:
       billing.subscription?.currentPeriodEnd && !billing.subscription.trialEndsAt
-        ? formatDate(billing.subscription.currentPeriodEnd)
+        ? formatDate(locale, billing.subscription.currentPeriodEnd, true)
         : null,
     activeCampaignCount,
     approved,
@@ -80,17 +84,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, billing, session } = await authenticate.admin(request);
+  const locale = resolveLocale(request);
   const formData = await request.formData();
   const requestedPlan = String(formData.get("plan") || "") as AppPlan;
-  const { plan: currentPlan } = await getBillingSummary(admin, session.shop);
-  const billingTest = isBillingTest();
+  const [{ plan: currentPlan }, billingTest] = await Promise.all([
+    getBillingSummary(admin, session.shop),
+    shouldUseTestBilling(admin, session.shop),
+  ]);
 
   if (!isSelectablePlan(requestedPlan)) {
     return { error: "Choose a valid plan." };
   }
 
   if (requestedPlan === currentPlan) {
-    return redirect("/app/plans");
+    return redirect(withLocale("/app/plans", locale));
   }
 
   if (requestedPlan === "free") {
@@ -122,7 +129,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: billingErrorMessage(error) };
     }
 
-    return redirect("/app/plans?billing=cancelled");
+    return redirect(withLocale("/app/plans?billing=cancelled", locale));
   }
 
   try {
@@ -132,7 +139,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       isTest: billingTest,
       // Bring the merchant back to this page (inside Shopify Admin) instead of
       // the app root so they see the confirmation and their new plan.
-      returnUrl: embeddedPlansUrl(session.shop),
+      returnUrl: embeddedPlansUrl(session.shop, locale),
     });
   } catch (error) {
     if (error instanceof Response) {
@@ -152,6 +159,7 @@ export default function Plans() {
     activeCampaignCount,
     approved,
   } = useLoaderData<typeof loader>() as PlansLoaderData;
+  const { t } = useTranslation();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -169,58 +177,53 @@ export default function Plans() {
 
   useEffect(() => {
     if (approved) {
-      showToast(`You are now on ${current.name}`);
+      showToast(t("toast.planChanged", { plan: current.name }));
     } else if (billingStatus === "cancelled") {
-      showToast("Subscription cancelled");
+      showToast(t("toast.cancelled"));
     }
-  }, [approved, billingStatus, current.name]);
+  }, [approved, billingStatus, current.name, t]);
 
   const choosePlan = (plan: AppPlan) => {
     submit({ plan }, { method: "post" });
   };
 
   return (
-    <s-page heading="Plans">
+    <s-page heading={t("plans.title")}>
       {billingTest ? (
-        <s-banner heading="Billing is in test mode" tone="info">
-          <s-paragraph>
-            No real charges are made. Set SHOPIFY_BILLING_TEST=false in
-            production when the app is ready for real charges.
-          </s-paragraph>
+        <s-banner heading={t("plans.testMode.heading")} tone="info">
+          <s-paragraph>{t("plans.testMode.text")}</s-paragraph>
         </s-banner>
       ) : null}
 
       {approved ? (
-        <s-banner heading={`You are now on ${current.name}`} tone="success">
+        <s-banner heading={t("plans.approved.heading", { plan: current.name })} tone="success">
           <s-paragraph>
             {trialEndsLabel
-              ? `Your free trial runs until ${trialEndsLabel}; you will not be charged before then.`
-              : "All plan features are unlocked."}
+              ? t("plans.approved.trial", { date: trialEndsLabel })
+              : t("plans.approved.text")}
           </s-paragraph>
         </s-banner>
       ) : billingStatus === "cancelled" ? (
-        <s-banner heading="Subscription cancelled" tone="success">
-          <s-paragraph>You are back on the Free plan.</s-paragraph>
+        <s-banner heading={t("plans.cancelled.heading")} tone="success">
+          <s-paragraph>{t("plans.cancelled.text")}</s-paragraph>
         </s-banner>
       ) : null}
 
       {actionData?.error ? (
-        <s-banner heading="Could not change plan" tone="critical">
+        <s-banner heading={t("plans.error.heading")} tone="critical">
           <s-paragraph>{actionData.error}</s-paragraph>
         </s-banner>
       ) : null}
 
-      <s-section heading="Choose the right plan">
+      <s-section heading={t("plans.heading")}>
         <s-stack direction="block" gap="base">
           <s-paragraph>
-            Free keeps the basics available. Pro and Enterprise unlock the
-            advanced discount types and targeting controls, and both start with
-            a {PAID_PLAN_TRIAL_DAYS}-day free trial.
-            {nextChargeLabel ? ` Your next charge is on ${nextChargeLabel}.` : ""}
+            {t("plans.intro", { days: PAID_PLAN_TRIAL_DAYS })}
+            {nextChargeLabel ? ` ${t("plans.nextCharge", { date: nextChargeLabel })}` : ""}
           </s-paragraph>
 
           <s-grid gap="base" gridTemplateColumns="repeat(auto-fit, minmax(240px, 1fr))">
-            {(Object.keys(PLAN_ENTITLEMENTS) as AppPlan[]).map((plan) => {
+            {PLANS.map((plan) => {
               const entitlements = PLAN_ENTITLEMENTS[plan];
               const isCurrentPlan = currentPlan === plan;
               const isSubmitting = submittingPlan === plan;
@@ -235,38 +238,36 @@ export default function Plans() {
                   padding="base"
                 >
                   <s-stack direction="block" gap="base">
-                    <s-stack alignItems="center" direction="inline" gap="small" justifyContent="space-between">
+                    <s-stack
+                      alignItems="center"
+                      direction="inline"
+                      gap="small"
+                      justifyContent="space-between"
+                    >
                       <s-heading>{entitlements.name}</s-heading>
                       {isCurrentPlan ? (
-                        <s-badge tone="success">Current plan</s-badge>
+                        <s-badge tone="success">{t("plans.current")}</s-badge>
                       ) : isPaid && currentPlan === "free" ? (
-                        <s-badge tone="info">{PAID_PLAN_TRIAL_DAYS}-day free trial</s-badge>
+                        <s-badge tone="info">
+                          {t("plans.trialBadge", { days: PAID_PLAN_TRIAL_DAYS })}
+                        </s-badge>
                       ) : null}
                     </s-stack>
-                    <s-text color="subdued">{planDescriptions[plan]}</s-text>
+                    <s-text color="subdued">{t(`plans.desc.${plan}`)}</s-text>
                     <s-stack alignItems="baseline" direction="inline" gap="small-300">
                       <s-heading>{entitlements.priceLabel.replace("/month", "")}</s-heading>
-                      <s-text color="subdued">/ month</s-text>
+                      <s-text color="subdued">{t("plans.perMonth")}</s-text>
                     </s-stack>
-                    {isPaid ? (
-                      <s-text color="subdued">
-                        Billed every 30 days through Shopify. Cancel any time.
-                      </s-text>
-                    ) : null}
-                    <s-unordered-list>
-                      {planFeatures(plan).map((feature) => (
-                        <s-list-item key={feature}>{feature}</s-list-item>
-                      ))}
-                    </s-unordered-list>
+                    {isPaid ? <s-text color="subdued">{t("plans.billedNote")}</s-text> : null}
                     {isCurrentPlan ? (
-                      <s-button disabled>Current plan</s-button>
+                      <s-button disabled>{t("plans.current")}</s-button>
                     ) : plan === "free" ? (
                       <s-button
                         command="--show"
                         commandFor={DOWNGRADE_MODAL_ID}
                         disabled={flag(Boolean(submittingPlan))}
                       >
-                        Downgrade to Free
+                        {t("plans.downgrade")}
                       </s-button>
                     ) : (
                       <s-button
@@ -276,10 +277,10 @@ export default function Plans() {
                         variant="primary"
                       >
                         {currentPlan === "free"
-                          ? `Start ${PAID_PLAN_TRIAL_DAYS}-day free trial`
+                          ? t("common.startTrial", { days: PAID_PLAN_TRIAL_DAYS })
                           : plan === "enterprise"
-                            ? "Upgrade to Enterprise"
-                            : "Switch to Pro"}
+                            ? t("plans.upgradeEnterprise")
+                            : t("plans.switchPro")}
                       </s-button>
                     )}
                   </s-stack>
@@ -290,25 +291,74 @@ export default function Plans() {
         </s-stack>
       </s-section>
 
-      <s-modal heading="Downgrade to Free?" id={DOWNGRADE_MODAL_ID}>
+      <s-section heading={t("plans.compare.heading")}>
+        <s-table variant="auto">
+          <s-table-header-row>
+            <s-table-header listSlot="primary">{t("plans.compare.feature")}</s-table-header>
+            {PLANS.map((plan) => (
+              <s-table-header key={plan} listSlot="labeled">
+                {PLAN_ENTITLEMENTS[plan].name}
+              </s-table-header>
+            ))}
+          </s-table-header-row>
+          <s-table-body>
+            <s-table-row>
+              <s-table-cell>{t("plans.compare.activeDiscounts")}</s-table-cell>
+              {PLANS.map((plan) => (
+                <s-table-cell key={plan}>
+                  {Number.isFinite(PLAN_ENTITLEMENTS[plan].maxActiveCampaigns)
+                    ? String(PLAN_ENTITLEMENTS[plan].maxActiveCampaigns)
+                    : t("common.unlimited")}
+                </s-table-cell>
+              ))}
+            </s-table-row>
+            <FeatureRow label={t("plans.compare.percentage")} values={[true, true, true]} />
+            <FeatureRow label={t("plans.compare.targeting")} values={[true, true, true]} />
+            <FeatureRow label={t("plans.compare.minimums")} values={[true, true, true]} />
+            <FeatureRow
+              label={t("plans.compare.fixed")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].fixedAmountDiscounts)}
+            />
+            <FeatureRow
+              label={t("plans.compare.bogo")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].bogoDiscounts)}
+            />
+            <FeatureRow
+              label={t("plans.compare.shipping")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].shippingDiscounts)}
+            />
+            <FeatureRow
+              label={t("plans.compare.market")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].marketTargeting)}
+            />
+            <FeatureRow
+              label={t("plans.compare.scheduling")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].scheduling)}
+            />
+            <FeatureRow
+              label={t("plans.compare.support")}
+              values={PLANS.map((plan) => PLAN_ENTITLEMENTS[plan].prioritySupport)}
+            />
+          </s-table-body>
+        </s-table>
+      </s-section>
+
+      <s-modal heading={t("plans.downgradeModal.heading")} id={DOWNGRADE_MODAL_ID}>
         <s-stack direction="block" gap="base">
-          <s-paragraph>
-            Your {current.name} subscription is cancelled immediately and any
-            unused time is credited by Shopify. On Free:
-          </s-paragraph>
+          <s-paragraph>{t("plans.downgradeModal.text", { plan: current.name })}</s-paragraph>
           <s-unordered-list>
             <s-list-item>
-              Only {PLAN_ENTITLEMENTS.free.maxActiveCampaigns} discount can be active
               {campaignsToDeactivate > 0
-                ? ` (you currently have ${activeCampaignCount} active; you will need to deactivate ${campaignsToDeactivate})`
-                : ""}
-              .
+                ? t("plans.downgradeModal.limitOver", {
+                    limit: PLAN_ENTITLEMENTS.free.maxActiveCampaigns,
+                    active: activeCampaignCount,
+                    over: campaignsToDeactivate,
+                  })
+                : t("plans.downgradeModal.limit", {
+                    limit: PLAN_ENTITLEMENTS.free.maxActiveCampaigns,
+                  })}
             </s-list-item>
-            <s-list-item>
-              Discounts using fixed amounts, BOGO, volume tiers, shipping
-              discounts, market targeting, or scheduling keep running but cannot
-              be edited until those settings are removed.
-            </s-list-item>
+            <s-list-item>{t("plans.downgradeModal.features")}</s-list-item>
           </s-unordered-list>
         </s-stack>
         <s-button
@@ -320,13 +370,26 @@ export default function Plans() {
           tone="critical"
           variant="primary"
         >
-          Downgrade to Free
+          {t("plans.downgrade")}
         </s-button>
         <s-button command="--hide" commandFor={DOWNGRADE_MODAL_ID} slot="secondary-actions">
-          Keep {current.name}
+          {t("plans.keep", { plan: current.name })}
         </s-button>
       </s-modal>
     </s-page>
+  );
+}
+
+function FeatureRow({ label, values }: { label: string; values: boolean[] }) {
+  return (
+    <s-table-row>
+      <s-table-cell>{label}</s-table-cell>
+      {values.map((included, index) => (
+        <s-table-cell key={index}>
+          {included ? <s-icon tone="success" type="check" /> : <s-icon tone="neutral" type="minus" />}
+        </s-table-cell>
+      ))}
+    </s-table-row>
   );
 }
 
@@ -357,11 +420,11 @@ function subscriptionForPlan(
  * The Plans page as seen inside Shopify Admin. Shopify appends `charge_id`
  * when it redirects back after the merchant approves the subscription.
  */
-function embeddedPlansUrl(shop: string) {
+function embeddedPlansUrl(shop: string, locale: string) {
   const store = shop.replace(".myshopify.com", "");
   const apiKey = process.env.SHOPIFY_API_KEY || "";
 
-  return `https://admin.shopify.com/store/${store}/apps/${apiKey}/app/plans?billing=approved`;
+  return `https://admin.shopify.com/store/${store}/apps/${apiKey}/app/plans?billing=approved&locale=${locale}`;
 }
 
 function billingErrorMessage(error: unknown) {
@@ -386,52 +449,6 @@ function billingErrorMessage(error: unknown) {
 
 function hasErrorData(error: unknown): error is { errorData: unknown } {
   return Boolean(error && typeof error === "object" && "errorData" in error);
-}
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-const planDescriptions: Record<AppPlan, string> = {
-  free: "For one simple automatic discount.",
-  pro: "For stores that need advanced discount campaigns.",
-  enterprise: "For high-volume stores that need no campaign cap.",
-};
-
-function planFeatures(plan: AppPlan) {
-  const entitlements = PLAN_ENTITLEMENTS[plan];
-  const campaignLimit = formatCampaignLimit(entitlements.maxActiveCampaigns);
-
-  if (plan === "free") {
-    return [
-      `${campaignLimit} active discount`,
-      "Percentage product and order discounts",
-      "Product and collection include/exclude rules",
-      "Minimum subtotal and quantity conditions",
-    ];
-  }
-
-  if (plan === "pro") {
-    return [
-      `${campaignLimit} active discounts`,
-      "Fixed amount discounts",
-      "BOGO and volume tier discounts",
-      "Shipping discounts and shipping method targeting",
-      "Market targeting and scheduling",
-    ];
-  }
-
-  return [
-    `${campaignLimit} active discounts`,
-    "All Pro features",
-    "Priority support",
-    "Best for larger catalogs and multiple campaigns",
-  ];
 }
 
 export function ErrorBoundary() {
