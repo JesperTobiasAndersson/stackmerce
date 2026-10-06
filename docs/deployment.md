@@ -28,6 +28,9 @@ The service is configured for the smallest possible bill without slow loads:
   it roughly halves cold starts (~0.5 s measured), which matters for Shopify's
   Core Web Vitals check.
 - Artifact Registry keeps the three newest images and deletes the rest.
+- Secret Manager bills per enabled version beyond the first six (account-wide),
+  so destroy superseded versions after rotating a secret:
+  `gcloud secrets versions destroy <n> --secret=<name>`.
 - Neon free tier auto-suspends after 5 minutes idle; the first query after
   that adds ~0.3–0.5 s. Move to Neon Launch if that shows up in the vitals.
 
@@ -40,12 +43,13 @@ Secrets (Secret Manager, read by the runtime service account
 
 | Secret | Value |
 | --- | --- |
-| `shopify-api-key` | Client ID from the Partner Dashboard |
 | `shopify-api-secret` | Client secret from the Partner Dashboard |
 | `database-url` | Neon connection string (pooled) |
 
 Non-secret settings are substitutions in `cloudbuild.yaml`:
-`_SHOPIFY_APP_URL`, `_SCOPES`, `_REGION`, `_MAX_INSTANCES`. The deploy step
+`_SHOPIFY_APP_URL`, `_SHOPIFY_API_KEY` (the Client ID is public — it is rendered
+into every app page — so it is a plain env var, not a secret), `_SCOPES`,
+`_REGION`, `_MAX_INSTANCES`. The deploy step
 sets `NODE_ENV=production`, `SESSION_STORAGE_BACKEND=neon`,
 `SHOPIFY_BILLING_TEST=false`.
 

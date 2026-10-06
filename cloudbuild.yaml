@@ -28,8 +28,11 @@ steps:
       # Startup CPU boost is billed only while the instance starts and roughly
       # halves the cold start, which matters for Shopify's Core Web Vitals check.
       - --cpu-boost
-      - --set-env-vars=^|^NODE_ENV=production|SHOPIFY_APP_URL=${_SHOPIFY_APP_URL}|SCOPES=${_SCOPES}|SESSION_STORAGE_BACKEND=neon|SESSION_STORAGE_TABLE=shopify_sessions|SHOPIFY_BILLING_TEST=false
-      - --set-secrets=SHOPIFY_API_KEY=shopify-api-key:latest,SHOPIFY_API_SECRET=shopify-api-secret:latest,DATABASE_URL=database-url:latest
+      # SHOPIFY_API_KEY is the public Client ID (it is rendered into every app
+      # page as <meta name="shopify-api-key">), so it is a plain env var; only
+      # the secret and the database URL need Secret Manager.
+      - --set-env-vars=^|^NODE_ENV=production|SHOPIFY_APP_URL=${_SHOPIFY_APP_URL}|SHOPIFY_API_KEY=${_SHOPIFY_API_KEY}|SCOPES=${_SCOPES}|SESSION_STORAGE_BACKEND=neon|SESSION_STORAGE_TABLE=shopify_sessions|SHOPIFY_BILLING_TEST=false
+      - --set-secrets=SHOPIFY_API_SECRET=shopify-api-secret:latest,DATABASE_URL=database-url:latest
 
 images:
   - ${_IMAGE_URI}:${_TAG}
@@ -47,3 +50,4 @@ substitutions:
   _IMAGE_URI: europe-west3-docker.pkg.dev/discount-494316/discount-app/discount-app
   _SHOPIFY_APP_URL: https://discount-app-437971048935.europe-west3.run.app
   _SCOPES: read_discounts,write_discounts,read_shipping,read_markets
+  _SHOPIFY_API_KEY: 2bf6876a2bbf4381c85973f61ddfa5cb
